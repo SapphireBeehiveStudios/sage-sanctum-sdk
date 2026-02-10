@@ -5,7 +5,7 @@ Handles SPIFFE authentication, Transaction Tokens, LLM gateway access,
 and standardized input/output formats.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .agent import AgentResult, AgentRunner, SageSanctumAgent
 from .context import AgentContext
