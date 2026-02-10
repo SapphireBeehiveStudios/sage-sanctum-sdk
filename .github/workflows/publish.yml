@@ -1,11 +1,8 @@
-name: Publish to PyPI
+name: Build & Publish to PyPI
 
 on:
-  release:
-    types: [published]
-
-permissions:
-  id-token: write
+  push:
+    tags: ["v*"]
 
 jobs:
   test:
@@ -21,15 +18,32 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v
 
-  publish:
+  build:
     needs: test
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Set version from tag
+        run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
       - run: pip install build
       - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
