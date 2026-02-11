@@ -1,8 +1,7 @@
 """Tests for GatewayChatModel header injection and create_llm_for_gateway."""
 
 import json
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage

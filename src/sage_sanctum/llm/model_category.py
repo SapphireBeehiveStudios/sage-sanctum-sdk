@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ModelCategory(str, Enum):
+class ModelCategory(StrEnum):
     """Categories of LLM usage within an agent.
 
     Each category maps to a list of allowed models in the TraT's

@@ -7,16 +7,14 @@ import json
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from sage_sanctum.auth.credentials import GatewayCredentials
 from sage_sanctum.auth.spiffe import _decode_jwt_payload
 from sage_sanctum.auth.trat import AllowedModels
 from sage_sanctum.errors import SageSanctumError
-from sage_sanctum.gateway.http import GatewayHttpClient, HttpResponse
+from sage_sanctum.gateway.http import GatewayHttpClient
 from sage_sanctum.io.outputs import Finding, Location, SarifOutput
 from sage_sanctum.llm.model_category import ModelCategory
 from sage_sanctum.llm.model_ref import ModelRef
 from sage_sanctum.llm.model_selector import ModelSelector
-
 
 # ---------------------------------------------------------------------------
 # Strategies

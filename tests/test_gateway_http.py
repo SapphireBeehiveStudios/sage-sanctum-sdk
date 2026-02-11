@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 
 from sage_sanctum.errors import GatewayError, GatewayUnavailableError
-from sage_sanctum.gateway.http import GatewayHttpClient, HttpResponse
-
+from sage_sanctum.gateway.http import GatewayHttpClient
 
 # ---------------------------------------------------------------------------
 # __init__
