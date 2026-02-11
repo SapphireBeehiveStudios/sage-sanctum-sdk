@@ -32,9 +32,9 @@ class TestDirectProviderClient:
         monkeypatch.delenv("GOOGLE_BASE_URL", raising=False)
 
         client = DirectProviderClient()
-        assert "openai.com" in client.get_endpoint("openai")
-        assert "anthropic.com" in client.get_endpoint("anthropic")
-        assert "googleapis.com" in client.get_endpoint("google")
+        assert client.get_endpoint("openai") == "https://api.openai.com/v1"
+        assert client.get_endpoint("anthropic") == "https://api.anthropic.com"
+        assert client.get_endpoint("google") == "https://generativelanguage.googleapis.com"
 
     def test_get_api_key(self, monkeypatch):
         monkeypatch.setenv("SAGE_SANCTUM_ALLOW_DIRECT", "1")
