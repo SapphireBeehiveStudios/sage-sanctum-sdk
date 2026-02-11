@@ -18,7 +18,13 @@ _DEFAULT_TIMEOUT = 120  # seconds
 
 @dataclass
 class HttpResponse:
-    """Simple HTTP response container."""
+    """Simple HTTP response container.
+
+    Attributes:
+        status: HTTP status code (e.g. ``200``, ``429``, ``502``).
+        headers: Response headers (keys are lower-cased).
+        data: Response body as a decoded string.
+    """
 
     status: int
     headers: dict[str, str]
@@ -40,6 +46,19 @@ class GatewayHttpClient:
         port: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
+        """Initialize the HTTP client.
+
+        Exactly one of ``socket_path`` or ``host`` must be provided.
+
+        Args:
+            socket_path: Path to a Unix domain socket (``AF_UNIX``).
+            host: TCP hostname for ``AF_INET`` connections.
+            port: TCP port number (required when ``host`` is set).
+            timeout: Socket timeout in seconds. Defaults to 120.
+
+        Raises:
+            GatewayError: If neither ``socket_path`` nor ``host`` is provided.
+        """
         self._socket_path = Path(socket_path) if socket_path else None
         self._host = host
         self._port = port
@@ -50,6 +69,7 @@ class GatewayHttpClient:
 
     @property
     def is_unix_socket(self) -> bool:
+        """Whether this client connects via Unix domain socket."""
         return self._socket_path is not None
 
     def request(
@@ -132,7 +152,7 @@ class GatewayHttpClient:
                     response = b"".join(chunks)
                     if self._is_response_complete(response):
                         break
-                except socket.timeout:
+                except TimeoutError:
                     break
             return b"".join(chunks)
         finally:

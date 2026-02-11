@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
@@ -17,13 +16,25 @@ from ..auth.trat import (
     TransactionToken,
 )
 from ..gateway.client import GatewayClient
-from ..llm.model_ref import ModelRef
 
 
 class MockGatewayClient(GatewayClient):
     """Mock gateway client for testing.
 
-    Returns configurable credentials and endpoints.
+    Returns configurable credentials and endpoints without any real
+    network or authentication dependencies.
+
+    Args:
+        is_gateway: Whether to simulate gateway mode. Defaults to ``False``.
+        endpoints: Provider → URL mapping. Defaults to localhost endpoints.
+        trat: Optional ``TransactionToken`` to return from ``get_trat()``.
+
+    Example:
+        ```python
+        client = MockGatewayClient(is_gateway=True)
+        creds = client.get_credentials()
+        assert creds.spiffe_jwt == "mock-spiffe-jwt"
+        ```
     """
 
     def __init__(
@@ -41,26 +52,43 @@ class MockGatewayClient(GatewayClient):
         self._trat = trat
 
     def get_credentials(self) -> GatewayCredentials:
+        """Return mock credentials (``"mock-spiffe-jwt"`` / ``"mock-trat-jwt"``)."""
         return GatewayCredentials(
             spiffe_jwt="mock-spiffe-jwt",
             trat="mock-trat-jwt",
         )
 
     def get_endpoint(self, provider: str) -> str:
+        """Return the mock endpoint URL for a provider."""
         return self._endpoints.get(provider, "http://localhost:8080/v1")
 
     @property
     def is_gateway_mode(self) -> bool:
+        """Whether gateway mode is simulated."""
         return self._is_gateway
 
     def get_trat(self) -> TransactionToken | None:
+        """Return the configured mock TraT, or ``None``."""
         return self._trat
 
 
 class MockLLM(BaseChatModel):
-    """Mock LLM for testing.
+    """Mock LangChain chat model for testing.
 
-    Returns canned responses and tracks calls.
+    Returns canned responses in order and records every call for assertion.
+
+    Attributes:
+        responses: Ordered list of response strings to return.
+            When exhausted, returns ``"Mock response"``.
+        calls: List of message lists received — one entry per ``invoke()`` call.
+
+    Example:
+        ```python
+        llm = MockLLM(responses=["Finding: SQL injection", "No issues"])
+        r1 = llm.invoke([...])  # "Finding: SQL injection"
+        r2 = llm.invoke([...])  # "No issues"
+        assert len(llm.calls) == 2
+        ```
     """
 
     responses: list[str] = []
@@ -70,6 +98,12 @@ class MockLLM(BaseChatModel):
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self, responses: list[str] | None = None, **kwargs: Any):
+        """Initialize the mock LLM.
+
+        Args:
+            responses: Canned responses to return in order. If ``None``,
+                every call returns ``"Mock response"``.
+        """
         super().__init__(**kwargs)
         if responses:
             self.responses = responses
@@ -87,6 +121,7 @@ class MockLLM(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        """Record the call and return the next canned response."""
         self.calls.append(messages)
 
         if self._call_index < len(self.responses):
@@ -105,7 +140,19 @@ class MockLLM(BaseChatModel):
 
 
 class MockTratClient:
-    """Mock Transaction Token client for testing."""
+    """Mock Transaction Token client for testing.
+
+    Returns a configurable ``TransactionToken`` without any file or
+    sidecar dependencies. Ships with sensible defaults for common
+    testing scenarios.
+
+    Args:
+        trat: An explicit ``TransactionToken`` to return.
+        allowed_models: Custom model allowlists. Ignored if ``trat`` is
+            provided. Defaults to gpt-4o-mini (triage), gpt-4o +
+            claude-3-5-sonnet (analysis), o1 (reasoning),
+            text-embedding-3-small (embeddings).
+    """
 
     def __init__(
         self,
@@ -118,16 +165,18 @@ class MockTratClient:
             self._trat = self._default_trat(allowed_models)
 
     def get_token(self) -> TransactionToken:
+        """Return the mock Transaction Token."""
         return self._trat
 
     def invalidate(self) -> None:
+        """No-op — mock tokens don't need cache invalidation."""
         pass
 
     @staticmethod
     def _default_trat(
         allowed_models: AllowedModels | None = None,
     ) -> TransactionToken:
-        """Create a default test TraT."""
+        """Create a default test TraT with preset models and metadata."""
         import time
 
         if not allowed_models:

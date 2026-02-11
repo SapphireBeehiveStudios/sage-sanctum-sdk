@@ -84,7 +84,7 @@ The context reads the following environment variables during initialization:
 | `SPIFFE_JWT_PATH` | No | — | Path to SPIFFE JWT file |
 | `TRAT_FILE` | No | — | Path to TraT file |
 | `AUTH_SIDECAR_SOCKET` | No | — | Auth sidecar Unix socket |
-| `GATEWAY_SOCKET` | No | — | LLM gateway Unix socket |
+| `LLM_GATEWAY_SOCKET` | No | — | LLM gateway Unix socket |
 | `SAGE_SANCTUM_ALLOW_DIRECT` | No | — | Set to `1` for direct mode |
 | `SAGE_MODEL` / `OPENAI_MODEL` | No | — | Model override |
 

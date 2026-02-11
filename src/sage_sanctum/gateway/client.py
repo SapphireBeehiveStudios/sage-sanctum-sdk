@@ -15,13 +15,21 @@ from pathlib import Path
 from ..auth.credentials import GatewayCredentials
 from ..auth.spiffe import JWTSource
 from ..auth.trat import TransactionToken, TransactionTokenClient
-from ..errors import ConfigurationError, GatewayError
+from ..errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
 
 class GatewayClient(ABC):
-    """Abstract gateway client for accessing LLM providers."""
+    """Abstract base class for accessing LLM providers via the gateway.
+
+    Two concrete implementations:
+
+    - ``SpiffeGatewayClient`` — production, routes through Unix socket with
+      SPIFFE + TraT authentication.
+    - ``DirectProviderClient`` — local development, calls providers directly
+      with API keys.
+    """
 
     @abstractmethod
     def get_credentials(self) -> GatewayCredentials:
@@ -64,11 +72,20 @@ class SpiffeGatewayClient(GatewayClient):
         trat_client: TransactionTokenClient,
         gateway_socket: str | Path | None = None,
     ) -> None:
+        """Initialize the production gateway client.
+
+        Args:
+            jwt_source: SPIFFE JWT source for agent identity.
+            trat_client: Transaction Token client for authorization.
+            gateway_socket: Unix socket path to the LLM gateway.
+                Falls back to environment-based endpoints if not set.
+        """
         self._jwt_source = jwt_source
         self._trat_client = trat_client
         self._gateway_socket = Path(gateway_socket) if gateway_socket else None
 
     def get_credentials(self) -> GatewayCredentials:
+        """Fetch fresh SPIFFE JWT and TraT, bundled as gateway credentials."""
         jwt = self._jwt_source.get_token()
         trat = self._trat_client.get_token()
         return GatewayCredentials(spiffe_jwt=jwt, trat=trat.raw)

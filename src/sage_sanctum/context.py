@@ -6,19 +6,17 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from langchain_core.language_models import BaseChatModel
 
 from .auth.spiffe import JWTSource
-from .auth.trat import TransactionToken, TransactionTokenClient
+from .auth.trat import TransactionTokenClient
 from .errors import ConfigurationError
 from .gateway.client import DirectProviderClient, GatewayClient, SpiffeGatewayClient
 from .io.inputs import RepositoryInput
 from .io.outputs import AgentOutput
 from .llm.gateway_chat import create_llm_for_gateway
 from .llm.model_category import ModelCategory
-from .llm.model_ref import ModelRef
 from .llm.model_selector import ModelSelector, StaticModelSelector
 
 logger = logging.getLogger(__name__)
@@ -28,12 +26,30 @@ logger = logging.getLogger(__name__)
 class AgentContext:
     """Central context for agent execution.
 
-    Provides access to:
-    - Run metadata (run_id, org_id)
-    - Working directories
-    - Gateway client for LLM access
-    - Model selector for model resolution
-    - Logger
+    Provides access to run metadata, LLM clients, model selection, and I/O.
+    Created automatically by ``AgentRunner`` or manually via factory methods.
+
+    Attributes:
+        run_id: Unique identifier for this agent run.
+        org_id: Organization identifier.
+        work_dir: Working directory for temporary files.
+        output_dir: Directory where agent output is written.
+        gateway_client: Client for LLM gateway access (SPIFFE or direct).
+        model_selector: Resolves ``ModelCategory`` to concrete ``ModelRef``.
+        logger: Logger instance for the agent.
+
+    Example:
+        ```python
+        # Production (via AgentRunner — automatic):
+        context = AgentContext.from_environment()
+
+        # Local development:
+        context = AgentContext.for_local_development(
+            work_dir="/tmp/work",
+            output_dir="/tmp/output",
+            model="openai:gpt-4o",
+        )
+        ```
     """
 
     run_id: str
@@ -48,7 +64,17 @@ class AgentContext:
         """Create an LLM client for the specified model category.
 
         Resolves the model from the selector, then creates an appropriate
-        LLM client (gateway-backed or direct).
+        LLM client (``GatewayChatModel`` in gateway mode, ``ChatLiteLLM``
+        in direct mode).
+
+        Args:
+            category: The model category (e.g. ``ModelCategory.ANALYSIS``).
+
+        Returns:
+            A LangChain ``BaseChatModel`` ready for ``invoke()`` calls.
+
+        Raises:
+            ModelNotAvailableError: If no model is configured for the category.
         """
         model_ref = self.model_selector.select(category)
         logger.debug("Creating LLM client for %s: %s", category.value, model_ref)
@@ -87,7 +113,7 @@ class AgentContext:
         - SPIFFE_JWT_PATH: Path to SPIFFE JWT file
         - TRAT_FILE: Path to TraT file
         - AUTH_SIDECAR_SOCKET: Path to auth sidecar Unix socket
-        - GATEWAY_SOCKET: Path to LLM gateway Unix socket
+        - LLM_GATEWAY_SOCKET: Path to LLM gateway Unix socket
         - SAGE_SANCTUM_ALLOW_DIRECT: Set to '1' for direct provider access
         """
         run_id = os.environ.get("RUN_ID", "")
@@ -130,7 +156,18 @@ class AgentContext:
     ) -> AgentContext:
         """Create context for local development with direct API keys.
 
-        Requires SAGE_SANCTUM_ALLOW_DIRECT=1 to be set.
+        Bypasses the gateway and calls LLM providers directly using API keys
+        from environment variables. Sets ``SAGE_SANCTUM_ALLOW_DIRECT=1``
+        automatically.
+
+        Args:
+            work_dir: Working directory for temporary files.
+            output_dir: Directory for agent output.
+            model: Model reference string (e.g. ``"openai:gpt-4o"``). Used
+                for all categories via ``StaticModelSelector``.
+
+        Returns:
+            A fully configured ``AgentContext`` in direct mode.
         """
         os.environ.setdefault("SAGE_SANCTUM_ALLOW_DIRECT", "1")
 
@@ -166,7 +203,7 @@ class AgentContext:
             sidecar_socket=sidecar_socket,
         )
 
-        gateway_socket = os.environ.get("GATEWAY_SOCKET")
+        gateway_socket = os.environ.get("LLM_GATEWAY_SOCKET")
 
         return SpiffeGatewayClient(
             jwt_source=jwt_source,
