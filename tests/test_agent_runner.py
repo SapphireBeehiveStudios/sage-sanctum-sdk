@@ -1,19 +1,13 @@
 """Tests for AgentRunner lifecycle and exit codes."""
 
-import asyncio
-import logging
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from sage_sanctum.agent import AgentResult, AgentRunner, SageSanctumAgent
-from sage_sanctum.context import AgentContext
-from sage_sanctum.errors import ConfigurationError, SpiffeAuthError
-from sage_sanctum.io.inputs import AgentInput, RepositoryInput
+from sage_sanctum.errors import SpiffeAuthError
+from sage_sanctum.io.inputs import AgentInput
 from sage_sanctum.io.outputs import SarifOutput
-from sage_sanctum.llm.model_selector import StaticModelSelector
-from sage_sanctum.testing.mocks import MockGatewayClient
 
 
 class SimpleAgent(SageSanctumAgent):

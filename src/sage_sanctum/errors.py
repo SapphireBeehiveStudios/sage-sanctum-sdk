@@ -13,7 +13,19 @@ from __future__ import annotations
 
 
 class SageSanctumError(Exception):
-    """Base error for all Sage Sanctum SDK errors."""
+    """Base error for all Sage Sanctum SDK errors.
+
+    Every subclass defines a class-level ``exit_code`` so the ``AgentRunner``
+    can map exceptions to process exit codes automatically.
+
+    Attributes:
+        exit_code: Process exit code returned when this error propagates
+            to ``AgentRunner``. Defaults to ``1``.
+
+    Args:
+        message: Human-readable error description.
+        exit_code: Override the class-level exit code for this instance.
+    """
 
     exit_code: int = 1
 
@@ -29,25 +41,40 @@ class SageSanctumError(Exception):
 
 
 class AuthError(SageSanctumError):
-    """Base authentication error."""
+    """Base authentication error (exit codes 10–19).
+
+    Raised when agent identity or token acquisition fails.
+    """
 
     exit_code = 10
 
 
 class SpiffeAuthError(AuthError):
-    """SPIFFE JWT acquisition or validation failed."""
+    """SPIFFE JWT acquisition or validation failed.
+
+    Raised when the JWT SVID file cannot be read, is empty, or contains
+    a malformed token.
+    """
 
     exit_code = 11
 
 
 class TraTAcquisitionError(AuthError):
-    """Failed to acquire Transaction Token."""
+    """Failed to acquire a Transaction Token.
+
+    Raised when the TraT file or auth sidecar is unavailable, or the
+    token is malformed.
+    """
 
     exit_code = 12
 
 
 class TraTExpiredError(AuthError):
-    """Transaction Token has expired."""
+    """Transaction Token has expired.
+
+    Raised by ``TransactionToken.check_not_expired()`` when the ``exp``
+    claim is in the past.
+    """
 
     exit_code = 13
 
@@ -58,19 +85,26 @@ class TraTExpiredError(AuthError):
 
 
 class ForbiddenError(SageSanctumError):
-    """Action not authorized."""
+    """Action not authorized (exit codes 20–29).
+
+    Raised when the agent attempts an operation it is not permitted to perform.
+    """
 
     exit_code = 20
 
 
 class ModelNotAuthorizedError(ForbiddenError):
-    """Requested model not in allowed_models."""
+    """Requested model is not in the TraT ``allowed_models`` list.
+
+    Raised by ``ModelSelector.validate_model()`` when the model is not
+    permitted for the given category.
+    """
 
     exit_code = 21
 
 
 class ScopeNotAuthorizedError(ForbiddenError):
-    """Requested scope not authorized in TraT."""
+    """Requested scope is not authorized in the Transaction Token."""
 
     exit_code = 22
 
@@ -81,19 +115,22 @@ class ScopeNotAuthorizedError(ForbiddenError):
 
 
 class GatewayError(SageSanctumError):
-    """Base gateway communication error."""
+    """Base gateway communication error (exit codes 30–39).
+
+    Raised when communication with the LLM or MCP gateway fails.
+    """
 
     exit_code = 30
 
 
 class RateLimitError(GatewayError):
-    """Rate limit exceeded at gateway."""
+    """Rate limit exceeded at the gateway or upstream provider."""
 
     exit_code = 31
 
 
 class GatewayUnavailableError(GatewayError):
-    """Gateway is unavailable."""
+    """Gateway is unreachable (connection refused, socket not found, etc.)."""
 
     exit_code = 32
 
@@ -104,25 +141,36 @@ class GatewayUnavailableError(GatewayError):
 
 
 class ValidationError(SageSanctumError):
-    """Base validation error."""
+    """Base validation error (exit codes 40–49).
+
+    Raised when input, path, or configuration validation fails.
+    """
 
     exit_code = 40
 
 
 class InputValidationError(ValidationError):
-    """Agent input validation failed."""
+    """Agent input validation failed.
+
+    Raised when ``RepositoryInput.validate()`` detects a missing or
+    invalid repository path.
+    """
 
     exit_code = 41
 
 
 class PathTraversalError(ValidationError):
-    """Path traversal attempt detected."""
+    """Path traversal attempt detected in a file path (``..`` components)."""
 
     exit_code = 42
 
 
 class ConfigurationError(ValidationError):
-    """Invalid configuration."""
+    """Missing or invalid SDK configuration.
+
+    Raised when required environment variables are missing or mutually
+    exclusive options conflict.
+    """
 
     exit_code = 43
 
@@ -133,19 +181,22 @@ class ConfigurationError(ValidationError):
 
 
 class OutputError(SageSanctumError):
-    """Base output error."""
+    """Base output error (exit codes 50–59).
+
+    Raised when agent output cannot be written or is invalid.
+    """
 
     exit_code = 50
 
 
 class OutputWriteError(OutputError):
-    """Failed to write output files."""
+    """Failed to write output files to the output directory."""
 
     exit_code = 51
 
 
 class SarifValidationError(OutputError):
-    """SARIF output validation failed."""
+    """SARIF output failed schema validation."""
 
     exit_code = 52
 
@@ -156,18 +207,28 @@ class SarifValidationError(OutputError):
 
 
 class ModelError(SageSanctumError):
-    """Base model error."""
+    """Base model error (exit codes 60–69).
+
+    Raised when model selection or reference parsing fails.
+    """
 
     exit_code = 60
 
 
 class ModelNotAvailableError(ModelError):
-    """Requested model is not available."""
+    """No model is configured for the requested category.
+
+    Raised by ``ModelSelector.select()`` when the TraT ``allowed_models``
+    list is empty for a given ``ModelCategory``.
+    """
 
     exit_code = 61
 
 
 class ModelRefParseError(ModelError):
-    """Failed to parse model reference."""
+    """Failed to parse a model reference string.
+
+    Raised by ``ModelRef.parse()`` when the input is empty or malformed.
+    """
 
     exit_code = 62

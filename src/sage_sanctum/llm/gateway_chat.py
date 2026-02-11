@@ -20,7 +20,7 @@ from ..gateway.http import GatewayHttpClient
 from .model_ref import ModelRef
 
 if TYPE_CHECKING:
-    from ..gateway.client import DirectProviderClient, GatewayClient
+    from ..gateway.client import GatewayClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,16 @@ def _messages_to_dicts(messages: list[BaseMessage]) -> list[dict[str, str]]:
 
 
 class GatewayChatModel(BaseChatModel):
-    """Chat model that routes through the Sage Sanctum LLM gateway.
+    """LangChain chat model that routes through the Sage Sanctum LLM gateway.
 
     Injects SPIFFE JWT + TraT headers on every request. Communicates
     via Unix socket (production) or TCP (dev).
+
+    Attributes:
+        model_ref: Canonical model reference (provider + model name).
+        gateway_client: Gateway client providing credentials.
+        http_client: HTTP client for gateway communication.
+        temperature: Sampling temperature. Defaults to ``0.0`` (deterministic).
     """
 
     model_ref: ModelRef
@@ -73,7 +79,22 @@ class GatewayChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Send messages through the gateway and return response."""
+        """Send messages through the gateway and return a chat response.
+
+        Fetches fresh credentials, builds an OpenAI-format request, injects
+        authentication headers, and sends the request via the HTTP client.
+
+        Args:
+            messages: LangChain message objects to send.
+            stop: Optional stop sequences.
+            run_manager: LangChain callback manager (unused).
+
+        Returns:
+            ``ChatResult`` with the assistant's response.
+
+        Raises:
+            GatewayError: On HTTP errors or malformed responses.
+        """
         # Get fresh credentials
         creds = self.gateway_client.get_credentials()
 
@@ -138,10 +159,16 @@ def create_llm_for_gateway(
     gateway_client: GatewayClient,
     temperature: float = 0.0,
 ) -> BaseChatModel:
-    """Create an LLM client appropriate for the gateway mode.
+    """Create an LLM client appropriate for the current gateway mode.
 
-    In gateway mode: returns GatewayChatModel with auth header injection.
-    In direct mode: returns ChatLiteLLM with direct API keys.
+    Args:
+        model_ref: The model to use.
+        gateway_client: Gateway client (determines gateway vs. direct mode).
+        temperature: Sampling temperature. Defaults to ``0.0``.
+
+    Returns:
+        ``GatewayChatModel`` when ``gateway_client.is_gateway_mode`` is ``True``,
+        ``ChatLiteLLM`` otherwise.
     """
     if gateway_client.is_gateway_mode:
         # Determine connection method from endpoint

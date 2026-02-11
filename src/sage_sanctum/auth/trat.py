@@ -7,7 +7,6 @@ a specific transaction within the Sage Sanctum platform.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,7 +20,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RequesterContext:
-    """Audit metadata from the TraT rctx claim."""
+    """Audit metadata from the TraT ``rctx`` claim.
+
+    Describes what triggered the agent run and who initiated it.
+
+    Attributes:
+        trigger: Event type that triggered the run (e.g. ``"pull_request"``).
+        pr_number: Pull request number, if the trigger was a PR event.
+        actor: User or bot that initiated the run (e.g. ``"dependabot[bot]"``).
+        source_ip: IP address of the triggering event source.
+    """
 
     trigger: str = ""
     pr_number: int | None = None
@@ -30,6 +38,7 @@ class RequesterContext:
 
     @classmethod
     def from_dict(cls, data: dict) -> RequesterContext:
+        """Create from a decoded JWT ``rctx`` claim dictionary."""
         return cls(
             trigger=data.get("trigger", ""),
             pr_number=data.get("pr_number"),
@@ -40,7 +49,17 @@ class RequesterContext:
 
 @dataclass(frozen=True)
 class AllowedModels:
-    """Model allowlists per category from tctx.allowed_models."""
+    """Model allowlists per category from ``tctx.allowed_models``.
+
+    Each field contains a list of ``provider:model`` reference strings
+    that the agent is authorized to use for that category.
+
+    Attributes:
+        triage: Models allowed for quick triage/classification tasks.
+        analysis: Models allowed for detailed analysis.
+        reasoning: Models allowed for complex reasoning.
+        embeddings: Models allowed for embedding generation.
+    """
 
     triage: list[str] = field(default_factory=list)
     analysis: list[str] = field(default_factory=list)
@@ -49,6 +68,7 @@ class AllowedModels:
 
     @classmethod
     def from_dict(cls, data: dict) -> AllowedModels:
+        """Create from a decoded ``tctx.allowed_models`` dictionary."""
         return cls(
             triage=data.get("triage", []),
             analysis=data.get("analysis", []),
@@ -57,6 +77,7 @@ class AllowedModels:
         )
 
     def to_dict(self) -> dict[str, list[str]]:
+        """Serialize to a plain dictionary keyed by category name."""
         return {
             "triage": self.triage,
             "analysis": self.analysis,
@@ -67,7 +88,20 @@ class AllowedModels:
 
 @dataclass(frozen=True)
 class TransactionContext:
-    """Immutable run parameters from the TraT tctx claim."""
+    """Immutable run parameters from the TraT ``tctx`` claim.
+
+    Carries the full authorization envelope for a single agent run.
+
+    Attributes:
+        run_id: Unique identifier for this run.
+        org_id: Organization that owns the repository being scanned.
+        repo_url: HTTPS URL of the repository.
+        agent_type: Agent type identifier (e.g. ``"sage-scanner"``).
+        agent_mode: Execution mode (e.g. ``"standard"``, ``"deep"``).
+        allowed_models: Per-category model allowlists.
+        allowed_providers: Provider names the agent may use (e.g. ``["openai"]``).
+        allowed_tools: MCP tools the agent may invoke, keyed by server name.
+    """
 
     run_id: str = ""
     org_id: str = ""
@@ -80,6 +114,7 @@ class TransactionContext:
 
     @classmethod
     def from_dict(cls, data: dict) -> TransactionContext:
+        """Create from a decoded JWT ``tctx`` claim dictionary."""
         allowed_models_data = data.get("allowed_models", {})
         return cls(
             run_id=data.get("run_id", ""),
@@ -95,7 +130,24 @@ class TransactionContext:
 
 @dataclass(frozen=True)
 class TransactionToken:
-    """Parsed Transaction Token with all claims."""
+    """Parsed Transaction Token (TraT) with all claims.
+
+    An IETF-standard JWT (``draft-ietf-oauth-transaction-tokens``) that
+    authorizes a specific transaction within the Sage Sanctum platform.
+
+    Attributes:
+        raw: The original JWT string (for forwarding to the gateway).
+        txn: Transaction ID — unique identifier for this token.
+        sub: Subject — the agent's SPIFFE ID.
+        scope: Space-separated OAuth scopes (e.g. ``"scan.execute scan.upload"``).
+        req_wl: Request allowlist — SPIFFE ID of the requester.
+        iat: Issued-at timestamp (Unix epoch seconds).
+        exp: Expiration timestamp (Unix epoch seconds).
+        aud: Audience claim.
+        iss: Issuer claim.
+        tctx: Transaction context with run parameters and model allowlists.
+        rctx: Requester context with audit metadata.
+    """
 
     raw: str
     txn: str
@@ -144,6 +196,7 @@ class TransactionToken:
 
     @property
     def is_expired(self) -> bool:
+        """Whether the token's ``exp`` claim is in the past."""
         return time.time() >= self.exp
 
     def check_not_expired(self) -> None:
@@ -171,6 +224,14 @@ class TransactionTokenClient:
         trat_file: str | Path | None = None,
         sidecar_socket: str | Path | None = None,
     ) -> None:
+        """Initialize the TraT client.
+
+        Args:
+            trat_file: Filesystem path to a file containing a TraT JWT.
+                Tried first when both sources are configured.
+            sidecar_socket: Unix socket path for the auth sidecar's
+                ``GET /trat`` endpoint. Used as fallback.
+        """
         self._trat_file = Path(trat_file) if trat_file else None
         self._sidecar_socket = Path(sidecar_socket) if sidecar_socket else None
         self._cached: TransactionToken | None = None
@@ -178,11 +239,15 @@ class TransactionTokenClient:
     def get_token(self) -> TransactionToken:
         """Get the current Transaction Token.
 
-        Tries file first, then sidecar socket.
+        Returns the cached token if it has not expired. Otherwise, acquires
+        a fresh token (file first, then sidecar socket).
+
+        Returns:
+            A valid, non-expired ``TransactionToken``.
 
         Raises:
-            TraTAcquisitionError: If the TraT cannot be acquired.
-            TraTExpiredError: If the acquired TraT is expired.
+            TraTAcquisitionError: If the TraT cannot be acquired from any source.
+            TraTExpiredError: If the acquired TraT is already expired.
         """
         # Return cached if still valid
         if self._cached and not self._cached.is_expired:
@@ -237,15 +302,6 @@ class TransactionTokenClient:
                 f"Auth sidecar socket not found: {self._sidecar_socket}"
             )
 
-        import urllib3
-
-        # Connect via Unix socket
-        http = urllib3.HTTPConnectionPool(
-            host="localhost",
-            port=0,  # Unused for UDS
-        )
-        # urllib3 doesn't natively support Unix sockets for plain pools.
-        # Use our gateway HTTP client for this.
         from ..gateway.http import GatewayHttpClient
 
         client = GatewayHttpClient(socket_path=self._sidecar_socket)

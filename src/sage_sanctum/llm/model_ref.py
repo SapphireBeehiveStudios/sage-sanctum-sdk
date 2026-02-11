@@ -28,7 +28,23 @@ def _detect_provider(model: str) -> str:
 class ModelRef:
     """Canonical reference to an LLM model.
 
-    Format: provider:model (e.g., 'openai:gpt-4o', 'anthropic:claude-3-5-sonnet-latest')
+    Format: ``provider:model`` (e.g. ``"openai:gpt-4o"``,
+    ``"anthropic:claude-3-5-sonnet-latest"``).
+
+    Immutable and hashable — safe to use as dict keys and in sets.
+
+    Attributes:
+        provider: Provider name (``"openai"``, ``"anthropic"``, or ``"google"``).
+        model: Model name (e.g. ``"gpt-4o"``, ``"claude-3-5-sonnet-latest"``).
+
+    Example:
+        ```python
+        ref = ModelRef.parse("openai:gpt-4o")
+        ref.provider    # "openai"
+        ref.model       # "gpt-4o"
+        ref.for_litellm # "gpt-4o"
+        str(ref)        # "openai:gpt-4o"
+        ```
     """
 
     provider: str
@@ -38,9 +54,17 @@ class ModelRef:
     def parse(cls, ref: str) -> ModelRef:
         """Parse a model reference string.
 
-        Accepts:
-        - 'provider:model' (explicit)
-        - 'model' (auto-detect provider)
+        Accepts two formats:
+
+        - ``"provider:model"`` — explicit provider.
+        - ``"model"`` — provider auto-detected from model name prefix
+          (``claude*`` → anthropic, ``gemini*`` → google, else openai).
+
+        Args:
+            ref: Model reference string to parse.
+
+        Returns:
+            Parsed ``ModelRef`` instance.
 
         Raises:
             ModelRefParseError: If the reference is empty or invalid.
@@ -66,12 +90,16 @@ class ModelRef:
 
     @property
     def for_litellm(self) -> str:
-        """Format for LiteLLM routing.
+        """Format the model name for LiteLLM routing.
 
         LiteLLM requires provider prefixes for non-OpenAI models:
-        - anthropic/claude-3-5-sonnet -> anthropic routing
-        - gemini/gemini-2.0-flash -> Google AI Studio routing
-        - gpt-4o -> OpenAI (no prefix needed)
+
+        - ``"anthropic/claude-3-5-sonnet"`` → Anthropic routing
+        - ``"gemini/gemini-2.0-flash"`` → Google AI Studio routing
+        - ``"gpt-4o"`` → OpenAI (no prefix needed)
+
+        Returns:
+            Model string suitable for ``ChatLiteLLM(model=...)``.
         """
         if self.provider == "anthropic":
             if self.model.startswith("anthropic/"):

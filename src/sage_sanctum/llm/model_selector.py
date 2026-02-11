@@ -15,6 +15,13 @@ class ModelSelector:
     """
 
     def __init__(self, allowed_models: dict[str, list[str]]) -> None:
+        """Initialize with a per-category model allowlist.
+
+        Args:
+            allowed_models: Dictionary mapping category names (e.g.
+                ``"analysis"``) to lists of ``provider:model`` strings.
+                Typically sourced from the TraT's ``tctx.allowed_models``.
+        """
         self._allowed: dict[str, list[ModelRef]] = {}
         for category, refs in allowed_models.items():
             self._allowed[category] = [ModelRef.parse(r) for r in refs]
@@ -35,11 +42,26 @@ class ModelSelector:
         return models[0]
 
     def select_all(self, category: ModelCategory) -> list[ModelRef]:
-        """Return all allowed models for the given category."""
+        """Return all allowed models for the given category.
+
+        Args:
+            category: Model category to query.
+
+        Returns:
+            List of allowed ``ModelRef`` instances (may be empty).
+        """
         return list(self._allowed.get(category.value, []))
 
     def is_allowed(self, model: ModelRef, category: ModelCategory) -> bool:
-        """Check if a specific model is allowed for a category."""
+        """Check if a specific model is allowed for a category.
+
+        Args:
+            model: The model to check.
+            category: The category to check against.
+
+        Returns:
+            ``True`` if the model is in the allowlist for the category.
+        """
         return model in self._allowed.get(category.value, [])
 
     def validate_model(self, model: ModelRef, category: ModelCategory) -> None:
@@ -62,6 +84,11 @@ class StaticModelSelector(ModelSelector):
     """
 
     def __init__(self, model: str | ModelRef) -> None:
+        """Initialize with a single model used for all categories.
+
+        Args:
+            model: Model reference string or ``ModelRef`` instance.
+        """
         if isinstance(model, str):
             model = ModelRef.parse(model)
         self._model = model
@@ -72,4 +99,5 @@ class StaticModelSelector(ModelSelector):
         })
 
     def select(self, category: ModelCategory) -> ModelRef:
+        """Always returns the static model, regardless of category."""
         return self._model

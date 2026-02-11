@@ -1,6 +1,5 @@
 """Tests for gateway client implementations."""
 
-import os
 
 import pytest
 

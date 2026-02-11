@@ -42,8 +42,15 @@ def _decode_jwt_payload(token: str) -> dict:
 class JWTSource:
     """Reads and caches SPIFFE JWTs from a file path.
 
-    SPIRE agent writes the JWT SVID to a well-known file path. This class
-    reads it, caches it in memory, and refreshes when approaching expiry.
+    The SPIRE agent writes the JWT SVID to a well-known file path. This class
+    reads it, caches it in memory, and automatically refreshes 5 minutes before
+    expiry (``_REFRESH_BUFFER_SECONDS``).
+
+    Args:
+        jwt_path: Filesystem path to the SPIFFE JWT SVID file.
+
+    Attributes:
+        path: Resolved ``Path`` to the JWT file.
     """
 
     def __init__(self, jwt_path: str | Path) -> None:
@@ -53,10 +60,17 @@ class JWTSource:
 
     @property
     def path(self) -> Path:
+        """Filesystem path to the JWT file."""
         return self._path
 
     def get_token(self) -> str:
         """Get a valid SPIFFE JWT, refreshing from file if needed.
+
+        Returns the cached token if it is still valid (with a 5-minute buffer
+        before expiry). Otherwise, reads a fresh token from the file.
+
+        Returns:
+            Raw JWT string suitable for the ``Authorization: Bearer`` header.
 
         Raises:
             SpiffeAuthError: If the JWT file cannot be read or is invalid.
@@ -100,7 +114,12 @@ class JWTSource:
         return token
 
     def is_expired(self) -> bool:
-        """Check if the cached token is expired or about to expire."""
+        """Check if the cached token is expired or about to expire.
+
+        Returns:
+            ``True`` if no token is cached, or it will expire within
+            ``_REFRESH_BUFFER_SECONDS`` (300 s).
+        """
         if not self._cached_token:
             return True
         return time.time() >= (self._cached_expiry - _REFRESH_BUFFER_SECONDS)

@@ -26,7 +26,7 @@ All SDK configuration is done through environment variables. No config files are
 | `SPIFFE_JWT_PATH` | No | — | Path to SPIFFE JWT SVID file |
 | `TRAT_FILE` | No | — | Path to Transaction Token file |
 | `AUTH_SIDECAR_SOCKET` | No | — | Unix socket path for auth sidecar |
-| `GATEWAY_SOCKET` | No | — | Unix socket path for LLM gateway |
+| `LLM_GATEWAY_SOCKET` | No | — | Unix socket path for LLM gateway |
 
 ## Local Development
 
@@ -55,7 +55,7 @@ ORG_ID=org-xyz
 REPO_PATH=/work/repo
 SPIFFE_JWT_PATH=/run/secrets/spiffe/jwt
 TRAT_FILE=/run/secrets/trat
-GATEWAY_SOCKET=/run/sockets/gateway.sock
+LLM_GATEWAY_SOCKET=/run/sockets/gateway.sock
 OUTPUT_PATH=/output
 ```
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -21,7 +20,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentResult:
-    """Result of an agent run."""
+    """Result of an agent run.
+
+    Returned by ``SageSanctumAgent.run()`` and processed by ``AgentRunner``
+    for output writing and exit code propagation.
+
+    Attributes:
+        output: Agent output (e.g. ``SarifOutput``). Written to disk by the runner.
+        exit_code: Process exit code. ``0`` indicates success.
+        error: Human-readable error message, if the run failed.
+        duration_seconds: Wall-clock execution time (set by ``AgentRunner``).
+        metadata: Arbitrary key-value pairs for telemetry or debugging.
+    """
 
     output: AgentOutput | None = None
     exit_code: int = 0
@@ -33,8 +43,29 @@ class AgentResult:
 class SageSanctumAgent(ABC):
     """Base class for Sage Sanctum agents.
 
-    Subclasses implement the async `run()` method with their business logic.
-    The SDK handles authentication, context initialization, and output writing.
+    Subclasses implement three members: ``name``, ``version``, and the async
+    ``run()`` method. The SDK handles authentication, context initialization,
+    and output writing.
+
+    Example:
+        ```python
+        class MyAgent(SageSanctumAgent):
+            @property
+            def name(self) -> str:
+                return "my-agent"
+
+            @property
+            def version(self) -> str:
+                return "1.0.0"
+
+            async def run(self, agent_input: AgentInput) -> AgentResult:
+                llm = self.context.create_llm_client(ModelCategory.ANALYSIS)
+                ...
+                return AgentResult(exit_code=0)
+        ```
+
+    Attributes:
+        context: The runtime context providing LLM clients, I/O, and metadata.
     """
 
     def __init__(self, context: AgentContext) -> None:
@@ -74,11 +105,27 @@ class AgentRunner:
     """
 
     def __init__(self, agent_class: type[SageSanctumAgent]) -> None:
+        """Initialize the runner.
+
+        Args:
+            agent_class: The agent class to instantiate and run. Must be a
+                subclass of ``SageSanctumAgent``.
+        """
         self._agent_class = agent_class
         self._shutdown_event: asyncio.Event | None = None
 
     def run(self) -> int:
-        """Run the agent synchronously. Returns exit code."""
+        """Run the agent synchronously.
+
+        Creates an asyncio event loop, initializes the agent context from
+        environment variables, executes the agent, writes output, and returns
+        the process exit code.
+
+        Returns:
+            Process exit code (``0`` for success, error-specific codes for
+            ``SageSanctumError`` subclasses, ``1`` for unexpected errors,
+            ``130`` for ``KeyboardInterrupt``).
+        """
         try:
             return asyncio.run(self._run_async())
         except KeyboardInterrupt:

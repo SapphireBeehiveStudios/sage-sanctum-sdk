@@ -1,6 +1,5 @@
 """Tests for AgentContext initialization."""
 
-import logging
 from pathlib import Path
 
 import pytest
