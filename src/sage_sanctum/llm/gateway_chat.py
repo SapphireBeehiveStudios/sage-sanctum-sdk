@@ -43,9 +43,12 @@ def _strip_schema_extras(schema: dict[str, Any]) -> None:
     for key in ("title", "default"):
         schema.pop(key, None)
 
-    # OpenAI strict mode requires additionalProperties: false on all objects
+    # OpenAI strict mode requires additionalProperties: false on all objects,
+    # and every property must appear in the "required" array.
     if schema.get("type") == "object" or "properties" in schema:
         schema["additionalProperties"] = False
+        if "properties" in schema:
+            schema["required"] = list(schema["properties"].keys())
 
     # Inline $defs / definitions — OpenAI doesn't support $ref
     defs = schema.pop("$defs", schema.pop("definitions", None))
