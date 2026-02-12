@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
+from pydantic import BaseModel
 
 from sage_sanctum.auth.credentials import GatewayCredentials
 from sage_sanctum.errors import GatewayError
@@ -12,6 +14,7 @@ from sage_sanctum.gateway.http import GatewayHttpClient, HttpResponse
 from sage_sanctum.llm.gateway_chat import (
     GatewayChatModel,
     _messages_to_dicts,
+    _strip_schema_extras,
     create_llm_for_gateway,
 )
 from sage_sanctum.llm.model_ref import ModelRef
@@ -355,3 +358,162 @@ class TestCreateLlmForGateway:
         assert isinstance(result, ChatLiteLLM)
         # api_base should not be set for standard endpoints
         assert result.api_base is None
+
+
+# ---------------------------------------------------------------------------
+# _strip_schema_extras
+# ---------------------------------------------------------------------------
+
+
+class TestStripSchemaExtras:
+    def test_removes_title_and_default(self):
+        schema = {"title": "Foo", "default": 42, "type": "object"}
+        _strip_schema_extras(schema)
+        assert "title" not in schema
+        assert "default" not in schema
+        assert schema["type"] == "object"
+
+    def test_recursive_strip(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"title": "Name", "type": "string", "default": ""},
+            },
+        }
+        _strip_schema_extras(schema)
+        assert "title" not in schema["properties"]["name"]
+        assert "default" not in schema["properties"]["name"]
+
+    def test_resolves_defs(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Inner": {"title": "Inner", "type": "string"},
+            },
+            "properties": {
+                "child": {"$ref": "#/$defs/Inner"},
+            },
+        }
+        _strip_schema_extras(schema)
+        assert "$defs" not in schema
+        # $ref should be resolved to the inner schema
+        assert schema["properties"]["child"]["type"] == "string"
+        assert "title" not in schema["properties"]["child"]
+
+    def test_preserves_non_title_keys(self):
+        schema = {"type": "object", "description": "A model", "title": "X"}
+        _strip_schema_extras(schema)
+        assert schema["description"] == "A model"
+        assert "title" not in schema
+
+
+# ---------------------------------------------------------------------------
+# with_structured_output
+# ---------------------------------------------------------------------------
+
+
+class _Finding(BaseModel):
+    severity: str
+    message: str
+
+
+class TestStructuredOutput:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    def _make_http_client(self, content: str) -> MagicMock:
+        client = MagicMock()
+        client.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "model": "gpt-4o",
+            }),
+        )
+        return client
+
+    def test_returns_runnable(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "high", "message": "test"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding)
+        assert isinstance(chain, Runnable)
+
+    def test_openai_sends_json_schema_response_format(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "high", "message": "test"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, _Finding)
+        assert result.severity == "high"
+        assert result.message == "test"
+
+        # Verify response_format was sent in request body
+        call_args = http.request.call_args
+        body = call_args.kwargs.get("body", {})
+        rf = body["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["name"] == "_Finding"
+        assert rf["json_schema"]["strict"] is True
+
+    def test_anthropic_sends_json_object_response_format(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "low", "message": "ok"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="anthropic", model="claude-3-5-sonnet"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, _Finding)
+        assert result.severity == "low"
+
+        call_args = http.request.call_args
+        body = call_args.kwargs.get("body", {})
+        rf = body["response_format"]
+        assert rf["type"] == "json_object"
+
+    def test_google_sends_json_object_response_format(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "medium", "message": "warn"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="google", model="gemini-2.0-flash"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, _Finding)
+        call_args = http.request.call_args
+        body = call_args.kwargs.get("body", {})
+        assert body["response_format"]["type"] == "json_object"
+
+    def test_response_format_not_in_regular_request(self, mock_gateway_client):
+        http = self._make_http_client("Hello")
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        call_args = http.request.call_args
+        body = call_args.kwargs.get("body", {})
+        assert "response_format" not in body

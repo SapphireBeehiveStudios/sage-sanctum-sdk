@@ -12,17 +12,75 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import Runnable, RunnablePassthrough
 from langchain_litellm import ChatLiteLLM
+from pydantic import BaseModel
 
 from ..errors import GatewayError
 from ..gateway.http import GatewayHttpClient
 from .model_ref import ModelRef
 
 if TYPE_CHECKING:
+    from langchain_core.language_models import LanguageModelInput
+
     from ..gateway.client import GatewayClient
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_schema_extras(schema: dict[str, Any]) -> None:
+    """Remove keys unsupported by OpenAI strict JSON schema mode in-place.
+
+    OpenAI's structured output rejects schemas containing ``title``,
+    ``default``, and ``$defs``/``definitions`` at any nesting level.
+    This recursively strips those keys so the schema passes validation.
+    """
+    for key in ("title", "default"):
+        schema.pop(key, None)
+
+    # Inline $defs / definitions — OpenAI doesn't support $ref
+    defs = schema.pop("$defs", schema.pop("definitions", None))
+
+    for value in schema.values():
+        if isinstance(value, dict):
+            _strip_schema_extras(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _strip_schema_extras(item)
+
+    # After stripping nested schemas, resolve $ref if we had defs
+    if defs is not None:
+        _resolve_refs(schema, defs)
+
+
+def _resolve_refs(schema: dict[str, Any], defs: dict[str, Any]) -> None:
+    """Resolve ``$ref`` pointers against the given definitions dict."""
+    for key, value in list(schema.items()):
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if ref and isinstance(ref, str) and ref.startswith("#/$defs/"):
+                ref_name = ref.split("/")[-1]
+                if ref_name in defs:
+                    resolved = dict(defs[ref_name])
+                    _strip_schema_extras(resolved)
+                    schema[key] = resolved
+            else:
+                _resolve_refs(value, defs)
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    ref = item.get("$ref")
+                    if ref and isinstance(ref, str) and ref.startswith("#/$defs/"):
+                        ref_name = ref.split("/")[-1]
+                        if ref_name in defs:
+                            resolved = dict(defs[ref_name])
+                            _strip_schema_extras(resolved)
+                            value[i] = resolved
+                    else:
+                        _resolve_refs(item, defs)
 
 
 def _messages_to_dicts(messages: list[BaseMessage]) -> list[dict[str, str]]:
@@ -72,6 +130,53 @@ class GatewayChatModel(BaseChatModel):
             "temperature": self.temperature,
         }
 
+    def with_structured_output(
+        self,
+        schema: type[BaseModel],
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, Any]:
+        """Return a Runnable that produces structured Pydantic output.
+
+        For OpenAI models, uses native JSON schema mode
+        (``response_format.type = "json_schema"``).  For other providers,
+        uses ``json_object`` mode and relies on the parser for validation.
+
+        Args:
+            schema: Pydantic model class to parse responses into.
+            include_raw: If ``True``, return a dict with ``raw``, ``parsed``,
+                and ``parsing_error`` keys.
+
+        Returns:
+            A LangChain ``Runnable`` that yields ``schema`` instances (or
+            raw+parsed dicts when *include_raw* is set).
+        """
+        parser = PydanticOutputParser(pydantic_object=schema)
+
+        if self.model_ref.provider == "openai":
+            json_schema = schema.model_json_schema()
+            _strip_schema_extras(json_schema)
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
+            llm = self.bind(response_format=response_format)
+        else:
+            llm = self.bind(response_format={"type": "json_object"})
+
+        if include_raw:
+            return llm | RunnablePassthrough.assign(
+                parsed=lambda x: _safe_parse(parser, x),
+                parsing_error=lambda x: _safe_parse_error(parser, x),
+            )
+
+        return llm | parser
+
     def _generate(
         self,
         messages: list[BaseMessage],
@@ -107,6 +212,9 @@ class GatewayChatModel(BaseChatModel):
         }
         if stop:
             request_body["stop"] = stop
+        # Forward response_format from bind() kwargs for structured output
+        if "response_format" in kwargs:
+            request_body["response_format"] = kwargs["response_format"]
 
         # Build headers with auth
         headers = creds.auth_headers()
@@ -152,6 +260,23 @@ class GatewayChatModel(BaseChatModel):
                 )
             ]
         )
+
+
+def _safe_parse(parser: PydanticOutputParser, message: AIMessage) -> BaseModel | None:
+    """Parse a message, returning None on failure."""
+    try:
+        return parser.parse(message.content)
+    except Exception:
+        return None
+
+
+def _safe_parse_error(parser: PydanticOutputParser, message: AIMessage) -> str | None:
+    """Parse a message, returning the error string on failure."""
+    try:
+        parser.parse(message.content)
+        return None
+    except Exception as e:
+        return str(e)
 
 
 def create_llm_for_gateway(
