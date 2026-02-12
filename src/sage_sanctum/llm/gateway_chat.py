@@ -31,23 +31,38 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_schema_extras(schema: dict[str, Any]) -> None:
-    """Remove keys unsupported by OpenAI strict JSON schema mode in-place.
+    """Normalize a Pydantic JSON schema for OpenAI strict structured output.
 
     OpenAI's structured output rejects schemas containing ``title``,
     ``default``, and ``$defs``/``definitions`` at any nesting level.
-    This recursively strips those keys so the schema passes validation.
+    It also requires ``additionalProperties: false`` on every object.
+
+    This uses schema-aware recursion rather than blindly iterating all dict
+    values, so property names like ``title`` aren't accidentally stripped.
     """
     for key in ("title", "default"):
         schema.pop(key, None)
 
+    # OpenAI strict mode requires additionalProperties: false on all objects
+    if schema.get("type") == "object" or "properties" in schema:
+        schema["additionalProperties"] = False
+
     # Inline $defs / definitions — OpenAI doesn't support $ref
     defs = schema.pop("$defs", schema.pop("definitions", None))
 
-    for value in schema.values():
-        if isinstance(value, dict):
-            _strip_schema_extras(value)
-        elif isinstance(value, list):
-            for item in value:
+    # Recurse into known schema sub-structures (not the properties dict itself
+    # since its keys are property names, not metadata)
+    if "properties" in schema:
+        for prop_schema in schema["properties"].values():
+            if isinstance(prop_schema, dict):
+                _strip_schema_extras(prop_schema)
+
+    if "items" in schema and isinstance(schema["items"], dict):
+        _strip_schema_extras(schema["items"])
+
+    for keyword in ("anyOf", "allOf", "oneOf"):
+        if keyword in schema and isinstance(schema[keyword], list):
+            for item in schema[keyword]:
                 if isinstance(item, dict):
                     _strip_schema_extras(item)
 
