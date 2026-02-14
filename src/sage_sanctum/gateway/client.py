@@ -7,7 +7,6 @@ Two modes:
 
 from __future__ import annotations
 
-import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -16,8 +15,9 @@ from ..auth.credentials import GatewayCredentials
 from ..auth.spiffe import JWTSource
 from ..auth.trat import TransactionToken, TransactionTokenClient
 from ..errors import ConfigurationError
+from ..logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GatewayClient(ABC):

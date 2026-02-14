@@ -7,15 +7,15 @@ a specific transaction within the Sage Sanctum platform.
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import TraTAcquisitionError, TraTExpiredError
+from ..logging import get_logger
 from .spiffe import _decode_jwt_payload
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -276,11 +276,7 @@ class TransactionTokenClient:
                 return token
             # File token expired — try sidecar as fallback
             if self._sidecar_socket:
-                logger.info(
-                    "File-based TraT expired (exp=%.0f), "
-                    "falling back to auth sidecar",
-                    token.exp,
-                )
+                logger.info("trat_expired_fallback", exp=token.exp)
                 return self._read_from_sidecar()
             # No sidecar available — return expired token so caller gets
             # a clear TraTExpiredError from check_not_expired()

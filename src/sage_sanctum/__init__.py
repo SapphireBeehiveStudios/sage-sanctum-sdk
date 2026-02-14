@@ -19,6 +19,7 @@ from .io.inputs import AgentInput, RepositoryInput
 from .io.outputs import AgentOutput, Finding, Location, SarifOutput, TokenUsage
 from .llm.model_category import ModelCategory
 from .llm.model_ref import ModelRef
+from .logging import configure_logging, get_logger
 
 __all__ = [
     "AgentContext",
@@ -35,4 +36,6 @@ __all__ = [
     "SageSanctumError",
     "SarifOutput",
     "TokenUsage",
+    "configure_logging",
+    "get_logger",
 ]

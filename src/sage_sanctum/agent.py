@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 import time
 from abc import ABC, abstractmethod
@@ -14,8 +13,9 @@ from .context import AgentContext
 from .errors import SageSanctumError
 from .io.inputs import AgentInput
 from .io.outputs import AgentOutput
+from .logging import configure_logging, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -126,16 +126,17 @@ class AgentRunner:
             ``SageSanctumError`` subclasses, ``1`` for unexpected errors,
             ``130`` for ``KeyboardInterrupt``).
         """
+        configure_logging()
         try:
             return asyncio.run(self._run_async())
         except KeyboardInterrupt:
-            logger.info("Agent interrupted by user")
+            logger.info("agent_interrupted")
             return 130  # Standard SIGINT exit code
         except SageSanctumError as e:
-            logger.error("Agent error: %s (exit code %d)", e, e.exit_code)
+            logger.error("agent_error", error=str(e), exit_code=e.exit_code)
             return e.exit_code
         except Exception as e:
-            logger.error("Unexpected error: %s", e, exc_info=True)
+            logger.error("unexpected_error", error=str(e), exc_info=True)
             return 1
 
     async def _run_async(self) -> int:
@@ -150,16 +151,16 @@ class AgentRunner:
         start_time = time.monotonic()
 
         # Initialize context
-        logger.info("Initializing agent context...")
+        logger.info("initializing_context")
         context = await AgentContext.from_environment_async()
 
         # Create agent
         agent = self._agent_class(context)
         logger.info(
-            "Starting agent %s v%s (run_id=%s)",
-            agent.name,
-            agent.version,
-            context.run_id,
+            "agent_starting",
+            agent=agent.name,
+            version=agent.version,
+            run_id=context.run_id,
         )
 
         # Load input
@@ -181,7 +182,7 @@ class AgentRunner:
                 await agent_task
             except asyncio.CancelledError:
                 pass
-            logger.info("Agent cancelled by shutdown signal")
+            logger.info("agent_cancelled")
             return 130
 
         # Agent completed normally — clean up shutdown waiter
@@ -194,19 +195,19 @@ class AgentRunner:
         # Write output
         if result.output:
             files = context.write_output(result.output)
-            logger.info("Output written: %s", files)
+            logger.info("output_written", files=files)
 
         logger.info(
-            "Agent %s completed in %.1fs (exit_code=%d)",
-            agent.name,
-            duration,
-            result.exit_code,
+            "agent_completed",
+            agent=agent.name,
+            duration=duration,
+            exit_code=result.exit_code,
         )
 
         return result.exit_code
 
     def _handle_signal(self, sig: signal.Signals) -> None:
         """Handle shutdown signals gracefully."""
-        logger.info("Received signal %s, shutting down...", sig.name)
+        logger.info("shutdown_signal_received", signal=sig.name)
         if self._shutdown_event:
             self._shutdown_event.set()

@@ -7,7 +7,6 @@ In direct mode, creates a standard ChatLiteLLM with direct API keys.
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +27,7 @@ from pydantic import BaseModel
 
 from ..errors import GatewayError, RateLimitError
 from ..gateway.http import GatewayHttpClient
+from ..logging import get_logger
 from .model_ref import ModelRef
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
     from ..gateway.client import GatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _strip_schema_extras(schema: dict[str, Any]) -> None:
