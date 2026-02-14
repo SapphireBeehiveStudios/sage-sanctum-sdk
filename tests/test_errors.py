@@ -67,6 +67,11 @@ class TestErrorHierarchy:
         assert ModelNotAvailableError("x").exit_code == 61
         assert ModelRefParseError("x").exit_code == 62
 
+    def test_rate_limit_error_is_gateway_subclass(self):
+        e = RateLimitError("rate limited")
+        assert isinstance(e, GatewayError)
+        assert e.exit_code == 31
+
     def test_inheritance(self):
         assert isinstance(SpiffeAuthError("x"), AuthError)
         assert isinstance(AuthError("x"), SageSanctumError)

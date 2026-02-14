@@ -22,6 +22,18 @@ class GatewayCredentials:
     spiffe_jwt: str
     trat: str
 
+    def __repr__(self) -> str:
+        """Return masked representation to prevent credential leakage in logs."""
+        return (
+            f"GatewayCredentials("
+            f"spiffe_jwt='{self.spiffe_jwt[:8]}...' "
+            f"trat='{self.trat[:8]}...')"
+        )
+
+    def __str__(self) -> str:
+        """Return masked string representation."""
+        return self.__repr__()
+
     def auth_headers(self) -> dict[str, str]:
         """Return HTTP headers for gateway authentication.
 

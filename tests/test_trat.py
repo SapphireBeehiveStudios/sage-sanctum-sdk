@@ -183,6 +183,22 @@ class TestAllowedModels:
         assert d["triage"] == ["openai:gpt-4o-mini"]
         assert d["embeddings"] == []
 
+    def test_has_any_with_triage(self):
+        am = AllowedModels(triage=["openai:gpt-4o-mini"])
+        assert am.has_any() is True
+
+    def test_has_any_with_only_analysis(self):
+        am = AllowedModels(analysis=["openai:gpt-4o"])
+        assert am.has_any() is True
+
+    def test_has_any_with_only_embeddings(self):
+        am = AllowedModels(embeddings=["openai:text-embedding-3-small"])
+        assert am.has_any() is True
+
+    def test_has_any_empty(self):
+        am = AllowedModels()
+        assert am.has_any() is False
+
 
 class TestTransactionTokenClient:
     def test_read_from_file(self, tmp_path):

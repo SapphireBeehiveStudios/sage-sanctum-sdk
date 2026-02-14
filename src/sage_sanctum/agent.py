@@ -165,8 +165,28 @@ class AgentRunner:
         # Load input
         agent_input = context.load_input()
 
-        # Run agent
-        result = await agent.run(agent_input)
+        # Run agent with cooperative cancellation via shutdown event
+        agent_task = asyncio.create_task(agent.run(agent_input))
+        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+
+        done, pending = await asyncio.wait(
+            {agent_task, shutdown_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if shutdown_task in done:
+            # Shutdown was requested — cancel the agent task and exit
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Agent cancelled by shutdown signal")
+            return 130
+
+        # Agent completed normally — clean up shutdown waiter
+        shutdown_task.cancel()
+        result = agent_task.result()
 
         duration = time.monotonic() - start_time
         result.duration_seconds = duration

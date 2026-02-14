@@ -3,8 +3,36 @@
 
 import pytest
 
+from sage_sanctum.auth.credentials import GatewayCredentials
 from sage_sanctum.errors import ConfigurationError
 from sage_sanctum.gateway.client import DirectProviderClient, SpiffeGatewayClient
+
+
+class TestGatewayCredentialsMasking:
+    def test_repr_masks_tokens(self):
+        creds = GatewayCredentials(
+            spiffe_jwt="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig",
+            trat="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig",
+        )
+        r = repr(creds)
+        assert "eyJhbGci..." in r
+        assert "eyJhbGci..." in r
+        # Full tokens should NOT appear
+        assert "payload.sig" not in r
+
+    def test_str_masks_tokens(self):
+        creds = GatewayCredentials(
+            spiffe_jwt="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig",
+            trat="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig",
+        )
+        s = str(creds)
+        assert "payload.sig" not in s
+
+    def test_repr_with_short_tokens(self):
+        """Short tokens still get masked without error."""
+        creds = GatewayCredentials(spiffe_jwt="short", trat="tiny")
+        r = repr(creds)
+        assert "GatewayCredentials" in r
 
 
 class TestDirectProviderClient:

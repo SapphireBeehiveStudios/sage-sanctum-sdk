@@ -1,5 +1,6 @@
 """Tests for AgentRunner lifecycle and exit codes."""
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -101,3 +102,46 @@ class TestAgentRunner:
         runner = AgentRunner(SimpleAgent)
         exit_code = runner.run()
         assert exit_code == 43  # ConfigurationError
+
+
+class SlowAgent(SageSanctumAgent):
+    """Agent that blocks until cancelled."""
+
+    @property
+    def name(self) -> str:
+        return "slow-agent"
+
+    @property
+    def version(self) -> str:
+        return "0.1.0"
+
+    async def run(self, agent_input: AgentInput) -> AgentResult:
+        await asyncio.sleep(3600)  # Block for a long time
+        return AgentResult(exit_code=0)
+
+
+class TestShutdownEvent:
+    def test_shutdown_cancels_agent(self, monkeypatch, tmp_path):
+        """Verify that setting the shutdown event cancels the running agent and returns 130."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        monkeypatch.setenv("RUN_ID", "test-run")
+        monkeypatch.setenv("ORG_ID", "test-org")
+        monkeypatch.setenv("SAGE_SANCTUM_ALLOW_DIRECT", "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("REPO_PATH", str(repo_dir))
+
+        runner = AgentRunner(SlowAgent)
+
+        async def run_with_signal():
+            """Run the agent and fire the shutdown event after a short delay."""
+            task = asyncio.create_task(runner._run_async())
+            # Wait a moment for the agent to start, then signal shutdown
+            await asyncio.sleep(0.1)
+            import signal
+            runner._handle_signal(signal.SIGTERM)
+            return await task
+
+        exit_code = asyncio.run(run_with_signal())
+        assert exit_code == 130

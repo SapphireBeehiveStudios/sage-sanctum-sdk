@@ -1,7 +1,11 @@
-"""MCP Gateway Client stub.
+"""MCP Gateway Client stub — NOT YET AVAILABLE.
 
-Placeholder for MCP tool invocation via the MCP gateway socket.
-Will be implemented when MCP gateway is available.
+This module is a placeholder for future MCP tool invocation via the
+MCP gateway socket. It is intentionally excluded from the public API
+(not exported from ``sage_sanctum`` or ``sage_sanctum.mcp``).
+
+Do not depend on this interface; it will change when the MCP gateway
+is implemented.
 """
 
 from __future__ import annotations

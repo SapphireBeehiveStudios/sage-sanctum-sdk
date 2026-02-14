@@ -8,21 +8,30 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.runnables import Runnable, RunnablePassthrough
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.runnables import Runnable
 from langchain_litellm import ChatLiteLLM
 from pydantic import BaseModel
 
-from ..errors import GatewayError
+from ..errors import GatewayError, RateLimitError
 from ..gateway.http import GatewayHttpClient
 from .model_ref import ModelRef
 
 if TYPE_CHECKING:
+    from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.language_models import LanguageModelInput
 
     from ..gateway.client import GatewayClient
@@ -101,19 +110,41 @@ def _resolve_refs(schema: dict[str, Any], defs: dict[str, Any]) -> None:
                         _resolve_refs(item, defs)
 
 
-def _messages_to_dicts(messages: list[BaseMessage]) -> list[dict[str, str]]:
+def _messages_to_dicts(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     """Convert LangChain messages to OpenAI-format dicts."""
-    result = []
+    result: list[dict[str, Any]] = []
     for msg in messages:
         if isinstance(msg, SystemMessage):
-            role = "system"
+            result.append({"role": "system", "content": msg.content})
         elif isinstance(msg, HumanMessage):
-            role = "user"
+            result.append({"role": "user", "content": msg.content})
         elif isinstance(msg, AIMessage):
-            role = "assistant"
+            d: dict[str, Any] = {"role": "assistant", "content": msg.content}
+            if msg.tool_calls:
+                d["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": (
+                                json.dumps(tc["args"])
+                                if isinstance(tc["args"], dict)
+                                else tc["args"]
+                            ),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            result.append(d)
+        elif isinstance(msg, ToolMessage):
+            result.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content,
+            })
         else:
-            role = "user"
-        result.append({"role": role, "content": msg.content})
+            result.append({"role": "user", "content": msg.content})
     return result
 
 
@@ -128,12 +159,18 @@ class GatewayChatModel(BaseChatModel):
         gateway_client: Gateway client providing credentials.
         http_client: HTTP client for gateway communication.
         temperature: Sampling temperature. Defaults to ``0.0`` (deterministic).
+        max_tokens: Maximum tokens to generate. ``None`` lets the provider decide.
+        top_p: Nucleus sampling threshold. ``None`` lets the provider decide.
+        seed: Random seed for deterministic generation. ``None`` for non-deterministic.
     """
 
     model_ref: ModelRef
     gateway_client: Any  # GatewayClient - using Any to avoid pydantic issues
     http_client: Any  # GatewayHttpClient
     temperature: float = 0.0
+    max_tokens: int | None = None
+    top_p: float | None = None
+    seed: int | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -188,12 +225,43 @@ class GatewayChatModel(BaseChatModel):
             llm = self.bind(response_format={"type": "json_object"})
 
         if include_raw:
-            return llm | RunnablePassthrough.assign(
-                parsed=lambda x: _safe_parse(parser, x),
-                parsing_error=lambda x: _safe_parse_error(parser, x),
-            )
+            def _parse_with_raw(ai_message: AIMessage) -> dict:
+                parsed = _safe_parse(parser, ai_message)
+                error = _safe_parse_error(parser, ai_message)
+                return {"raw": ai_message, "parsed": parsed, "parsing_error": error}
+
+            return llm | _parse_with_raw
 
         return llm | parser
+
+    def _build_request_body(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build the OpenAI-format request body."""
+        message_dicts = _messages_to_dicts(messages)
+        request_body: dict[str, Any] = {
+            "model": self.model_ref.model,
+            "messages": message_dicts,
+            "temperature": self.temperature,
+        }
+        if self.max_tokens is not None:
+            request_body["max_tokens"] = self.max_tokens
+        if self.top_p is not None:
+            request_body["top_p"] = self.top_p
+        if self.seed is not None:
+            request_body["seed"] = self.seed
+        if stop:
+            request_body["stop"] = stop
+        # Forward response_format from bind() kwargs for structured output
+        if "response_format" in kwargs:
+            request_body["response_format"] = kwargs["response_format"]
+        # Forward tools from bind() kwargs
+        if "tools" in kwargs:
+            request_body["tools"] = kwargs["tools"]
+        return request_body
 
     def _generate(
         self,
@@ -222,17 +290,7 @@ class GatewayChatModel(BaseChatModel):
         creds = self.gateway_client.get_credentials()
 
         # Build request
-        message_dicts = _messages_to_dicts(messages)
-        request_body = {
-            "model": self.model_ref.model,
-            "messages": message_dicts,
-            "temperature": self.temperature,
-        }
-        if stop:
-            request_body["stop"] = stop
-        # Forward response_format from bind() kwargs for structured output
-        if "response_format" in kwargs:
-            request_body["response_format"] = kwargs["response_format"]
+        request_body = self._build_request_body(messages, stop, **kwargs)
 
         # Build headers with auth
         headers = creds.auth_headers()
@@ -246,8 +304,17 @@ class GatewayChatModel(BaseChatModel):
                 headers=headers,
                 body=request_body,
             )
+        except RateLimitError:
+            raise
+        except GatewayError:
+            raise
         except Exception as e:
             raise GatewayError(f"Gateway request failed: {e}") from e
+
+        if response.status == 429:
+            raise RateLimitError(
+                f"Rate limited (429): {response.data}"
+            )
 
         if response.status != 200:
             raise GatewayError(
@@ -264,13 +331,39 @@ class GatewayChatModel(BaseChatModel):
         if not choices:
             raise GatewayError("Gateway returned no choices")
 
-        content = choices[0].get("message", {}).get("content", "")
+        message_data = choices[0].get("message", {})
+        content = message_data.get("content", "")
         usage = data.get("usage", {})
+
+        # Build AIMessage with tool calls if present
+        ai_kwargs: dict[str, Any] = {"content": content}
+        raw_tool_calls = message_data.get("tool_calls")
+        if raw_tool_calls:
+            ai_kwargs["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "name": tc["function"]["name"],
+                    "args": json.loads(tc["function"]["arguments"])
+                    if isinstance(tc["function"]["arguments"], str)
+                    else tc["function"]["arguments"],
+                }
+                for tc in raw_tool_calls
+            ]
+
+        # Add usage_metadata for LangChain native usage tracking
+        if usage:
+            ai_kwargs["usage_metadata"] = {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+
+        ai_message = AIMessage(**ai_kwargs)
 
         return ChatResult(
             generations=[
                 ChatGeneration(
-                    message=AIMessage(content=content),
+                    message=ai_message,
                     generation_info={
                         "usage": usage,
                         "model": data.get("model", str(self.model_ref)),
@@ -278,6 +371,81 @@ class GatewayChatModel(BaseChatModel):
                 )
             ]
         )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """Stream chat completions from the gateway via SSE.
+
+        Sends a streaming request with ``"stream": true`` and yields
+        ``ChatGenerationChunk`` objects as SSE events arrive.
+
+        NOTE: Streaming quality depends on the proxy passing through SSE
+        events without buffering. If the proxy buffers, events will arrive
+        in batches rather than individually.
+
+        Args:
+            messages: LangChain message objects to send.
+            stop: Optional stop sequences.
+            run_manager: LangChain callback manager.
+
+        Yields:
+            ``ChatGenerationChunk`` for each SSE event.
+
+        Raises:
+            GatewayError: On HTTP errors or malformed responses.
+        """
+        creds = self.gateway_client.get_credentials()
+        request_body = self._build_request_body(messages, stop, **kwargs)
+        request_body["stream"] = True
+
+        headers = creds.auth_headers()
+        headers["X-Provider"] = self.model_ref.provider
+
+        try:
+            line_iter = self.http_client.request_stream(
+                method="POST",
+                path="/v1/chat/completions",
+                headers=headers,
+                body=request_body,
+            )
+        except RateLimitError:
+            raise
+        except GatewayError:
+            raise
+        except Exception as e:
+            raise GatewayError(f"Gateway stream failed: {e}") from e
+
+        for raw_line in line_iter:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: "):]
+            if payload == "[DONE]":
+                break
+            try:
+                event = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+
+            choices = event.get("choices", [])
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            content = delta.get("content", "")
+            if content:
+                chunk = ChatGenerationChunk(
+                    message=AIMessageChunk(content=content)
+                )
+                if run_manager:
+                    run_manager.on_llm_new_token(content, chunk=chunk)
+                yield chunk
 
 
 def _safe_parse(parser: PydanticOutputParser, message: AIMessage) -> BaseModel | None:

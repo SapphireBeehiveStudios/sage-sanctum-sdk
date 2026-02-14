@@ -1,13 +1,15 @@
 """Tests for GatewayHttpClient HTTP parsing and socket communication."""
 
 import json
+import random
 import socket
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from sage_sanctum.errors import GatewayError, GatewayUnavailableError
+from sage_sanctum.errors import GatewayError, GatewayUnavailableError, RateLimitError
 from sage_sanctum.gateway.http import GatewayHttpClient
 
 # ---------------------------------------------------------------------------
@@ -525,3 +527,662 @@ class TestSendRawChunkedRecv:
         raw = client._send_raw(b"GET / HTTP/1.1\r\n\r\n")
         # The read loop exits on empty recv (EOF), returns what it got
         assert b"abc" in raw
+
+
+# ---------------------------------------------------------------------------
+# Retry logic
+# ---------------------------------------------------------------------------
+
+
+class TestRetryLogic:
+    def _make_client(self, tmp_path, max_retries=3, retry_backoff=0.5):
+        return GatewayHttpClient(
+            socket_path=tmp_path / "gw.sock",
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+        )
+
+    def test_retries_on_502(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert resp.data == "ok"
+        assert call_count == 3
+
+    def test_retries_on_503(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert call_count == 2
+
+    def test_retries_on_504(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n"
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert call_count == 2
+
+    def test_returns_last_response_when_retries_exhausted_on_502(self, tmp_path, monkeypatch):
+        """When all retries are exhausted on a non-429 retryable status, return the response."""
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            return b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\n\r\nbad gateway"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 502
+        assert resp.data == "bad gateway"
+
+    def test_exponential_backoff_delays(self, tmp_path, monkeypatch):
+        """Verify retry delays follow exponential backoff pattern."""
+        client = self._make_client(tmp_path, retry_backoff=1.0)
+
+        sleep_calls = []
+        monkeypatch.setattr(time, "sleep", lambda d: sleep_calls.append(d))
+        # Suppress random jitter for predictable testing
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            return b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        client.request("GET", "/test")
+
+        # With retry_backoff=1.0 and random()=0.0:
+        # attempt 0 -> 1.0 * (2^0) + 0.0 = 1.0
+        # attempt 1 -> 1.0 * (2^1) + 0.0 = 2.0
+        # attempt 2 -> 1.0 * (2^2) + 0.0 = 4.0
+        assert len(sleep_calls) == 3
+        assert sleep_calls[0] == 1.0
+        assert sleep_calls[1] == 2.0
+        assert sleep_calls[2] == 4.0
+
+    def test_max_retries_zero_disables_retries(self, tmp_path, monkeypatch):
+        """With max_retries=0, no retries occur."""
+        client = self._make_client(tmp_path, max_retries=0)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            return b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 502
+        assert call_count == 1
+
+    def test_retries_on_gateway_unavailable_error(self, tmp_path, monkeypatch):
+        """Connection errors (GatewayUnavailableError) trigger retries too."""
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise GatewayUnavailableError("Cannot connect")
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert call_count == 3
+
+    def test_gateway_unavailable_raises_after_retries_exhausted(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            raise GatewayUnavailableError("Cannot connect")
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        with pytest.raises(GatewayUnavailableError, match="Cannot connect"):
+            client.request("GET", "/test")
+
+    def test_non_retryable_status_returns_immediately(self, tmp_path, monkeypatch):
+        """Status codes outside the retryable set are returned without retrying."""
+        client = self._make_client(tmp_path)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            return b"HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nbad request"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 400
+        assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiting:
+    def _make_client(self, tmp_path, max_retries=3, retry_backoff=0.5):
+        return GatewayHttpClient(
+            socket_path=tmp_path / "gw.sock",
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+        )
+
+    def test_429_raises_rate_limit_error_after_retries(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            return b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 12\r\n\r\nrate limited"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        with pytest.raises(RateLimitError, match="Rate limited.*429.*retries"):
+            client.request("GET", "/test")
+
+    def test_429_with_max_retries_zero_raises_immediately(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path, max_retries=0)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            return b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 12\r\n\r\nrate limited"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        with pytest.raises(RateLimitError):
+            client.request("GET", "/test")
+
+        assert call_count == 1
+
+    def test_retry_after_header_respected(self, tmp_path, monkeypatch):
+        """When 429 includes Retry-After header, the delay uses that value."""
+        client = self._make_client(tmp_path, retry_backoff=0.5)
+
+        sleep_calls = []
+        monkeypatch.setattr(time, "sleep", lambda d: sleep_calls.append(d))
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (
+                    b"HTTP/1.1 429 Too Many Requests\r\n"
+                    b"Retry-After: 5\r\n"
+                    b"Content-Length: 12\r\n"
+                    b"\r\n"
+                    b"rate limited"
+                )
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == 5.0
+
+    def test_429_then_success(self, tmp_path, monkeypatch):
+        """A transient 429 followed by a 200 succeeds."""
+        client = self._make_client(tmp_path)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        call_count = 0
+
+        def mock_send_raw(data: bytes) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n"
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        resp = client.request("GET", "/test")
+
+        assert resp.status == 200
+        assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Timeout handling in _send_raw
+# ---------------------------------------------------------------------------
+
+
+class TestSendRawTimeout:
+    def test_timeout_raises_gateway_error(self, tmp_path, monkeypatch):
+        """TimeoutError during recv raises GatewayError, not silently returning partial data."""
+        client = GatewayHttpClient(socket_path=tmp_path / "gw.sock")
+
+        recv_count = 0
+
+        class FakeSocket:
+            def __init__(self):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                nonlocal recv_count
+                recv_count += 1
+                if recv_count == 1:
+                    return b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial"
+                raise TimeoutError("timed out")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(GatewayError, match="timed out"):
+            client._send_raw(b"GET / HTTP/1.1\r\n\r\n")
+
+    def test_timeout_on_first_recv_raises_gateway_error(self, tmp_path, monkeypatch):
+        """TimeoutError on the very first recv raises GatewayError."""
+        client = GatewayHttpClient(socket_path=tmp_path / "gw.sock")
+
+        class FakeSocket:
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                raise TimeoutError("timed out")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(GatewayError, match="timed out"):
+            client._send_raw(b"GET / HTTP/1.1\r\n\r\n")
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCheck:
+    def _make_client(self, tmp_path):
+        return GatewayHttpClient(
+            socket_path=tmp_path / "gw.sock", max_retries=0,
+        )
+
+    def test_returns_true_on_200(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        assert client.health_check() is True
+
+    def test_returns_false_on_non_200(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            return b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        assert client.health_check() is False
+
+    def test_returns_false_when_gateway_unreachable(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            raise GatewayUnavailableError("Cannot connect")
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        assert client.health_check() is False
+
+    def test_returns_false_on_gateway_error(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        def mock_send_raw(data: bytes) -> bytes:
+            raise GatewayError("something broke")
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        assert client.health_check() is False
+
+    def test_sends_get_health(self, tmp_path, monkeypatch):
+        """Verify health_check sends GET /health."""
+        client = self._make_client(tmp_path)
+
+        captured_data = {}
+
+        def mock_send_raw(data: bytes) -> bytes:
+            captured_data["raw"] = data
+            return b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+        monkeypatch.setattr(client, "_send_raw", mock_send_raw)
+        client.health_check()
+
+        raw = captured_data["raw"].decode()
+        assert raw.startswith("GET /health HTTP/1.1\r\n")
+
+
+# ---------------------------------------------------------------------------
+# Streaming (request_stream)
+# ---------------------------------------------------------------------------
+
+
+class TestRequestStream:
+    def _make_client(self, tmp_path):
+        return GatewayHttpClient(socket_path=tmp_path / "gw.sock")
+
+    def test_yields_lines_from_sse_response(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        sse_body = b"data: hello\ndata: world\n\n"
+        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + sse_body
+
+        class FakeSocket:
+            def __init__(self):
+                self._sent = False
+
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                if not self._sent:
+                    self._sent = True
+                    return response
+                return b""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        lines = list(client.request_stream("GET", "/stream"))
+
+        assert b"data: hello\n" in lines
+        assert b"data: world\n" in lines
+
+    def test_yields_lines_arriving_in_multiple_chunks(self, tmp_path, monkeypatch):
+        """SSE data arriving across multiple recv calls is yielded line-by-line."""
+        client = self._make_client(tmp_path)
+
+        header = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+        chunks = [
+            header + b"data: first",  # incomplete line
+            b"\ndata: second\n",       # completes first, includes second
+            b"data: third\n",          # third line
+            b"",                        # EOF
+        ]
+
+        class FakeSocket:
+            def __init__(self):
+                self._iter = iter(chunks)
+
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                return next(self._iter, b"")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        lines = list(client.request_stream("GET", "/stream"))
+
+        assert lines == [b"data: first\n", b"data: second\n", b"data: third\n"]
+
+    def test_stream_non_200_raises_gateway_error(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        chunks = [b"HTTP/1.1 500 Internal Server Error\r\n\r\nfailed", b""]
+
+        class FakeSocket:
+            def __init__(self):
+                self._iter = iter(chunks)
+
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                return next(self._iter, b"")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(GatewayError, match="status 500"):
+            list(client.request_stream("GET", "/stream"))
+
+    def test_stream_429_raises_rate_limit_error(self, tmp_path, monkeypatch):
+        client = self._make_client(tmp_path)
+
+        response = b"HTTP/1.1 429 Too Many Requests\r\n\r\nrate limited"
+        sent = False
+
+        class FakeSocket:
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                nonlocal sent
+                if not sent:
+                    sent = True
+                    return response
+                return b""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(RateLimitError, match="429"):
+            list(client.request_stream("GET", "/stream"))
+
+    def test_stream_connection_refused_raises_gateway_unavailable(self, tmp_path):
+        client = GatewayHttpClient(socket_path=tmp_path / "nonexistent.sock")
+
+        with pytest.raises(GatewayUnavailableError, match="Cannot connect"):
+            list(client.request_stream("GET", "/stream"))
+
+    def test_stream_timeout_raises_gateway_error(self, tmp_path, monkeypatch):
+        """Timeout during streaming body raises GatewayError."""
+        client = self._make_client(tmp_path)
+
+        header = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+        recv_count = 0
+
+        class FakeSocket:
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                nonlocal recv_count
+                recv_count += 1
+                if recv_count == 1:
+                    return header + b"data: first\n"
+                raise TimeoutError("timed out")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(GatewayError, match="timed out"):
+            list(client.request_stream("GET", "/stream"))
+
+    def test_stream_unexpected_error_wrapped_in_gateway_error(self, tmp_path, monkeypatch):
+        """Non-gateway exceptions during streaming are wrapped in GatewayError."""
+        client = self._make_client(tmp_path)
+
+        class FakeSocket:
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                raise RuntimeError("unexpected failure")
+
+            def recv(self, bufsize):
+                return b""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        with pytest.raises(GatewayError, match="Gateway stream failed"):
+            list(client.request_stream("GET", "/stream"))
+
+    def test_stream_yields_remaining_data_without_trailing_newline(self, tmp_path, monkeypatch):
+        """Data remaining in the buffer after EOF (no trailing newline) is yielded."""
+        client = self._make_client(tmp_path)
+
+        header = b"HTTP/1.1 200 OK\r\n\r\n"
+
+        class FakeSocket:
+            def __init__(self):
+                self._sent = False
+
+            def settimeout(self, t):
+                pass
+
+            def connect(self, addr):
+                pass
+
+            def sendall(self, data):
+                pass
+
+            def recv(self, bufsize):
+                if not self._sent:
+                    self._sent = True
+                    return header + b"data: partial"
+                return b""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSocket())
+
+        lines = list(client.request_stream("GET", "/stream"))
+
+        assert lines == [b"data: partial"]
+
+
+# ---------------------------------------------------------------------------
+# __init__ with retry parameters
+# ---------------------------------------------------------------------------
+
+
+class TestInitRetryParams:
+    def test_default_retry_params(self, tmp_path):
+        client = GatewayHttpClient(socket_path=tmp_path / "gw.sock")
+        assert client._max_retries == 3
+        assert client._retry_backoff == 0.5
+
+    def test_custom_retry_params(self, tmp_path):
+        client = GatewayHttpClient(
+            socket_path=tmp_path / "gw.sock",
+            max_retries=5,
+            retry_backoff=1.0,
+        )
+        assert client._max_retries == 5
+        assert client._retry_backoff == 1.0
+
+    def test_max_retries_zero(self, tmp_path):
+        client = GatewayHttpClient(socket_path=tmp_path / "gw.sock", max_retries=0)
+        assert client._max_retries == 0
