@@ -40,6 +40,26 @@ class TestDecodeJwtPayload:
         with pytest.raises(SpiffeAuthError, match="Failed to decode"):
             _decode_jwt_payload("header.!!!invalid!!!.sig")
 
+    def test_payload_requiring_padding(self):
+        """JWT payload that requires base64 padding is correctly decoded."""
+        # Use a payload whose base64 is NOT a multiple of 4 chars
+        payload = {"s": "x"}  # Short payload → base64 needs padding
+        token = _make_jwt(payload)
+        # Manually verify the payload part needs padding
+        payload_b64 = token.split(".")[1]
+        assert len(payload_b64) % 4 != 0, "Test requires non-padded base64"
+        decoded = _decode_jwt_payload(token)
+        assert decoded["s"] == "x"
+
+    def test_payload_no_padding_needed(self):
+        """JWT payload that requires no padding is correctly decoded."""
+        # Craft a payload whose base64 is exactly a multiple of 4
+        payload = {"sub": "spiffe://test", "exp": 12345}
+        token = _make_jwt(payload)
+        decoded = _decode_jwt_payload(token)
+        assert decoded["sub"] == "spiffe://test"
+        assert decoded["exp"] == 12345
+
 
 class TestJWTSource:
     def test_reads_jwt_from_file(self, tmp_path):
