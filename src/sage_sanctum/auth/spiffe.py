@@ -85,7 +85,12 @@ class JWTSource:
         return self._refresh()
 
     def _refresh(self) -> str:
-        """Read JWT from file and update cache."""
+        """Read JWT from file and update cache.
+
+        Raises:
+            SpiffeAuthError: If the file is missing, empty, malformed, or
+                the JWT has already expired.
+        """
         if not self._path.exists():
             raise SpiffeAuthError(f"SPIFFE JWT file not found: {self._path}")
 
@@ -103,8 +108,19 @@ class JWTSource:
         if exp is None:
             raise SpiffeAuthError("SPIFFE JWT missing 'exp' claim")
 
+        exp_float = float(exp)
+
+        # Reject already-expired JWTs — the file is static (written by init
+        # container) and re-reading it won't yield a fresh token.
+        if time.time() >= exp_float:
+            raise SpiffeAuthError(
+                f"SPIFFE JWT from {self._path} has expired "
+                f"(exp={exp_float:.0f}, now={time.time():.0f}). "
+                "The init container JWT is no longer valid."
+            )
+
         self._cached_token = token
-        self._cached_expiry = float(exp)
+        self._cached_expiry = exp_float
 
         logger.debug(
             "Refreshed SPIFFE JWT from %s (expires at %s)",

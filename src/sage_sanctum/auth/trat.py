@@ -259,10 +259,28 @@ class TransactionTokenClient:
         return token
 
     def _acquire(self) -> TransactionToken:
-        """Acquire TraT from file or sidecar."""
+        """Acquire TraT from file (preferred) with sidecar fallback.
+
+        When both sources are configured, tries the file first. If the
+        file-based token is expired, falls back to the sidecar which can
+        fetch a fresh token from the orchestrator TTS.
+        """
         # Try file first
         if self._trat_file:
-            return self._read_from_file()
+            token = self._read_from_file()
+            if not token.is_expired:
+                return token
+            # File token expired — try sidecar as fallback
+            if self._sidecar_socket:
+                logger.info(
+                    "File-based TraT expired (exp=%.0f), "
+                    "falling back to auth sidecar",
+                    token.exp,
+                )
+                return self._read_from_sidecar()
+            # No sidecar available — return expired token so caller gets
+            # a clear TraTExpiredError from check_not_expired()
+            return token
 
         # Try sidecar socket
         if self._sidecar_socket:
