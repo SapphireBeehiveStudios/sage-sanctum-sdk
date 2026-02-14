@@ -40,10 +40,12 @@ class GatewayEmbeddings(Embeddings):
         model: str,
         gateway_client: GatewayClient,
         http_client: GatewayHttpClient,
+        provider: str = "openai",
     ) -> None:
         self._model = model
         self._gateway_client = gateway_client
         self._http_client = http_client
+        self._provider = provider
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of texts via the gateway.
@@ -114,7 +116,7 @@ class GatewayEmbeddings(Embeddings):
         }
 
         headers = creds.auth_headers()
-        headers["X-Provider"] = "openai"
+        headers["X-Provider"] = self._provider
 
         try:
             response = self._http_client.request(
@@ -144,6 +146,7 @@ class GatewayEmbeddings(Embeddings):
 def create_embeddings_for_gateway(
     model: str,
     gateway_client: GatewayClient,
+    provider: str = "openai",
 ) -> Embeddings:
     """Create an embeddings client for the current gateway mode.
 
@@ -153,12 +156,13 @@ def create_embeddings_for_gateway(
     Args:
         model: Embedding model name (e.g. ``"text-embedding-3-small"``).
         gateway_client: Gateway client (determines gateway vs. direct mode).
+        provider: Provider name for the ``X-Provider`` header. Defaults to ``"openai"``.
 
     Returns:
         A LangChain ``Embeddings`` instance.
     """
     if gateway_client.is_gateway_mode:
-        endpoint = gateway_client.get_endpoint("openai")
+        endpoint = gateway_client.get_endpoint(provider)
 
         if endpoint.startswith("unix://"):
             socket_path = endpoint[len("unix://"):]
@@ -176,6 +180,7 @@ def create_embeddings_for_gateway(
             model=model,
             gateway_client=gateway_client,
             http_client=http_client,
+            provider=provider,
         )
 
     # Direct mode — fall back to OpenAIEmbeddings with env-var keys

@@ -76,6 +76,10 @@ class AllowedModels:
             embeddings=data.get("embeddings", []),
         )
 
+    def has_any(self) -> bool:
+        """Return ``True`` if any category has at least one model."""
+        return bool(self.triage or self.analysis or self.reasoning or self.embeddings)
+
     def to_dict(self) -> dict[str, list[str]]:
         """Serialize to a plain dictionary keyed by category name."""
         return {

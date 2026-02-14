@@ -52,9 +52,10 @@ class RepositoryInput(AgentInput):
             InputValidationError: If the path doesn't exist or isn't a directory.
             PathTraversalError: If the path contains traversal attempts.
         """
-        # Check for path traversal
+        # Check for path traversal — inspect individual path components
+        # to avoid false positives on names like "..foo"
         resolved = self.path.resolve()
-        if ".." in str(self.path):
+        if ".." in self.path.parts:
             raise PathTraversalError(
                 f"Path traversal detected in repository path: {self.path}"
             )

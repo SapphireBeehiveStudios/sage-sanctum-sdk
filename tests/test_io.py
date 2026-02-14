@@ -34,6 +34,19 @@ class TestRepositoryInput:
         with pytest.raises(PathTraversalError, match="traversal"):
             ri.validate()
 
+    def test_path_with_dotdot_in_name_not_flagged(self, tmp_path):
+        """Directory named '..foo' should NOT trigger path traversal."""
+        d = tmp_path / "..foo"
+        d.mkdir()
+        ri = RepositoryInput(path=d)
+        ri.validate()  # Should not raise
+
+    def test_path_traversal_middle_component(self, tmp_path):
+        """Path with '..' in the middle should be caught."""
+        ri = RepositoryInput(path=tmp_path / "a" / ".." / "b")
+        with pytest.raises(PathTraversalError, match="traversal"):
+            ri.validate()
+
     def test_list_files(self, tmp_path):
         repo = tmp_path / "repo"
         repo.mkdir()

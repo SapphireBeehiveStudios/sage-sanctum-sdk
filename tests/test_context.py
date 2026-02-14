@@ -46,6 +46,75 @@ class TestAgentContext:
         assert repo_input.path == Path(str(repo_dir))
 
 
+class TestModelSelectorCreation:
+    """Tests for _create_model_selector using has_any() instead of just triage."""
+
+    def test_selector_from_trat_with_only_analysis(self, monkeypatch):
+        """TraT with only analysis models (no triage) should still use TraT selector."""
+        from sage_sanctum.auth.trat import AllowedModels, TransactionContext, TransactionToken
+        from sage_sanctum.testing.mocks import MockGatewayClient
+
+        allowed = AllowedModels(analysis=["openai:gpt-4o"])
+        trat = TransactionToken(
+            raw="mock", txn="txn-1", sub="sub", scope="scan",
+            req_wl="", iat=0, exp=9999999999,
+            tctx=TransactionContext(allowed_models=allowed),
+        )
+
+        client = MockGatewayClient(trat=trat)
+        selector = AgentContext._create_model_selector(client)
+
+        assert isinstance(selector, ModelSelector)
+        ref = selector.select(ModelCategory.ANALYSIS)
+        assert ref == ModelRef(provider="openai", model="gpt-4o")
+
+    def test_selector_fallback_when_no_models(self, monkeypatch):
+        """TraT with empty allowed_models should fall back to env/static."""
+        from sage_sanctum.auth.trat import AllowedModels, TransactionContext, TransactionToken
+        from sage_sanctum.testing.mocks import MockGatewayClient
+
+        allowed = AllowedModels()  # All empty
+        trat = TransactionToken(
+            raw="mock", txn="txn-1", sub="sub", scope="scan",
+            req_wl="", iat=0, exp=9999999999,
+            tctx=TransactionContext(allowed_models=allowed),
+        )
+
+        client = MockGatewayClient(trat=trat)
+        selector = AgentContext._create_model_selector(client)
+
+        assert isinstance(selector, StaticModelSelector)
+
+
+class TestCheckGatewayHealth:
+    def test_direct_mode_returns_false(self, tmp_path):
+        """Health check in direct mode returns False (no gateway)."""
+        from sage_sanctum.testing.mocks import MockGatewayClient
+
+        ctx = AgentContext(
+            run_id="test", org_id="org",
+            work_dir=tmp_path, output_dir=tmp_path,
+            gateway_client=MockGatewayClient(is_gateway=False),
+            model_selector=StaticModelSelector("gpt-4o"),
+        )
+        assert ctx.check_gateway_health() is False
+
+    def test_gateway_mode_unreachable(self, tmp_path):
+        """Health check returns False when gateway socket doesn't exist."""
+        from sage_sanctum.testing.mocks import MockGatewayClient
+
+        ctx = AgentContext(
+            run_id="test", org_id="org",
+            work_dir=tmp_path, output_dir=tmp_path,
+            gateway_client=MockGatewayClient(
+                is_gateway=True,
+                endpoints={"openai": "unix:///nonexistent/socket.sock"},
+            ),
+            model_selector=StaticModelSelector("gpt-4o"),
+        )
+        assert ctx.check_gateway_health() is False
+
+
 class TestFromEnvironment:
     def test_missing_run_id(self, monkeypatch):
         monkeypatch.delenv("RUN_ID", raising=False)

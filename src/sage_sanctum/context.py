@@ -87,6 +87,7 @@ class AgentContext:
     def create_embeddings_client(
         self,
         model: str = "text-embedding-3-small",
+        provider: str = "openai",
     ) -> "Embeddings":
         """Create an embeddings client routed through the gateway.
 
@@ -96,15 +97,45 @@ class AgentContext:
 
         Args:
             model: Embedding model name. Defaults to ``"text-embedding-3-small"``.
+            provider: Provider name for the ``X-Provider`` header. Defaults to ``"openai"``.
 
         Returns:
             A LangChain ``Embeddings`` instance.
         """
-        logger.debug("Creating embeddings client: model=%s", model)
+        logger.debug("Creating embeddings client: model=%s provider=%s", model, provider)
         return create_embeddings_for_gateway(
             model=model,
             gateway_client=self.gateway_client,
+            provider=provider,
         )
+
+    def check_gateway_health(self) -> bool:
+        """Check if the LLM gateway is reachable.
+
+        Sends ``GET /health`` via the gateway's connection (UDS or TCP).
+        Returns ``False`` in direct mode since there is no gateway.
+
+        Returns:
+            ``True`` if the gateway responds with 200, ``False`` otherwise.
+        """
+        if not self.gateway_client.is_gateway_mode:
+            return False
+
+        from .gateway.http import GatewayHttpClient
+
+        endpoint = self.gateway_client.get_endpoint("openai")
+        if endpoint.startswith("unix://"):
+            socket_path = endpoint[len("unix://"):]
+            client = GatewayHttpClient(socket_path=socket_path)
+        else:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(endpoint)
+            client = GatewayHttpClient(
+                host=parsed.hostname or "localhost",
+                port=parsed.port or 8080,
+            )
+        return client.health_check()
 
     def load_input(self) -> RepositoryInput:
         """Load agent input from environment.
@@ -238,7 +269,7 @@ class AgentContext:
     def _create_model_selector(cls, gateway_client: GatewayClient) -> ModelSelector:
         """Create model selector from TraT or fallback to env var."""
         trat = gateway_client.get_trat()
-        if trat and trat.tctx.allowed_models.triage:
+        if trat and trat.tctx.allowed_models.has_any():
             # Use TraT's allowed_models
             return ModelSelector(trat.tctx.allowed_models.to_dict())
 

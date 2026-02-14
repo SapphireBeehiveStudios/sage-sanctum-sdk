@@ -278,6 +278,54 @@ class TestGatewayEmbeddings:
         assert result[1] == [0.9, 0.8]
 
 
+class TestProviderParameter:
+    """Tests for the configurable provider parameter."""
+
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    @pytest.fixture
+    def mock_http_client(self):
+        client = MagicMock()
+        client.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=_make_embedding_response([[0.1, 0.2, 0.3]]),
+        )
+        return client
+
+    def test_default_provider_is_openai(self, mock_gateway_client, mock_http_client):
+        emb = GatewayEmbeddings(
+            model="text-embedding-3-small",
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        emb.embed_query("test")
+
+        call_args = mock_http_client.request.call_args
+        headers = call_args.kwargs.get("headers", {})
+        assert headers["X-Provider"] == "openai"
+
+    def test_custom_provider(self, mock_gateway_client, mock_http_client):
+        emb = GatewayEmbeddings(
+            model="voyage-3",
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+            provider="voyage",
+        )
+        emb.embed_query("test")
+
+        call_args = mock_http_client.request.call_args
+        headers = call_args.kwargs.get("headers", {})
+        assert headers["X-Provider"] == "voyage"
+
+
 class TestCreateEmbeddingsForGateway:
     def test_gateway_mode_unix_socket(self):
         client = MagicMock()
@@ -298,6 +346,19 @@ class TestCreateEmbeddingsForGateway:
 
         assert isinstance(result, GatewayEmbeddings)
         assert not result._http_client.is_unix_socket
+
+    def test_gateway_mode_custom_provider(self):
+        client = MagicMock()
+        client.is_gateway_mode = True
+        client.get_endpoint.return_value = "unix:///run/sage/llm.sock"
+
+        result = create_embeddings_for_gateway(
+            "voyage-3", client, provider="voyage"
+        )
+
+        assert isinstance(result, GatewayEmbeddings)
+        assert result._provider == "voyage"
+        client.get_endpoint.assert_called_once_with("voyage")
 
     def test_direct_mode_returns_openai_embeddings(self, monkeypatch):
         pytest.importorskip("langchain_openai")

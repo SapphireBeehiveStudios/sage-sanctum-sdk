@@ -4,12 +4,13 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
 from sage_sanctum.auth.credentials import GatewayCredentials
-from sage_sanctum.errors import GatewayError
+from sage_sanctum.errors import GatewayError, RateLimitError
 from sage_sanctum.gateway.http import GatewayHttpClient, HttpResponse
 from sage_sanctum.llm.gateway_chat import (
     GatewayChatModel,
@@ -765,9 +766,7 @@ class TestStructuredOutput:
         assert body["response_format"]["type"] == "json_object"
 
     def test_include_raw_returns_runnable_openai(self, mock_gateway_client):
-        """include_raw=True constructs a chain with RunnableAssign (not plain parser)."""
-        from langchain_core.runnables.passthrough import RunnableAssign
-
+        """include_raw=True constructs a chain with a lambda (not plain parser)."""
         http = self._make_http_client('{"severity": "high", "message": "test"}')
         model = GatewayChatModel(
             model_ref=ModelRef(provider="openai", model="gpt-4o"),
@@ -776,8 +775,16 @@ class TestStructuredOutput:
         )
         chain = model.with_structured_output(_Finding, include_raw=True)
         assert isinstance(chain, Runnable)
-        # The last step in the include_raw chain is RunnableAssign (not PydanticOutputParser)
-        assert isinstance(chain.last, RunnableAssign)
+
+        # invoke should return a dict with raw, parsed, parsing_error keys
+        result = chain.invoke([HumanMessage(content="analyze")])
+        assert isinstance(result, dict)
+        assert "raw" in result
+        assert "parsed" in result
+        assert "parsing_error" in result
+        assert isinstance(result["raw"], AIMessage)
+        assert isinstance(result["parsed"], _Finding)
+        assert result["parsing_error"] is None
 
     def test_include_raw_returns_runnable_non_openai(self, mock_gateway_client):
         """include_raw=True works for non-OpenAI providers too."""
@@ -862,3 +869,712 @@ class TestSafeParseFunctions:
         result = _safe_parse_error(parser, msg)
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# include_raw end-to-end
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeRawEndToEnd:
+    """Test that include_raw=True returns raw, parsed, and parsing_error."""
+
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    def _make_http_client(self, content: str) -> MagicMock:
+        client = MagicMock()
+        client.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "model": "gpt-4o",
+            }),
+        )
+        return client
+
+    def test_include_raw_success_returns_parsed_model(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "high", "message": "found issue"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding, include_raw=True)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, dict)
+        assert isinstance(result["raw"], AIMessage)
+        assert result["raw"].content == '{"severity": "high", "message": "found issue"}'
+        assert isinstance(result["parsed"], _Finding)
+        assert result["parsed"].severity == "high"
+        assert result["parsed"].message == "found issue"
+        assert result["parsing_error"] is None
+
+    def test_include_raw_parse_failure_returns_error_string(self, mock_gateway_client):
+        http = self._make_http_client("this is not valid json")
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding, include_raw=True)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, dict)
+        assert isinstance(result["raw"], AIMessage)
+        assert result["parsed"] is None
+        assert isinstance(result["parsing_error"], str)
+        assert len(result["parsing_error"]) > 0
+
+    def test_include_raw_non_openai_provider(self, mock_gateway_client):
+        http = self._make_http_client('{"severity": "low", "message": "ok"}')
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="anthropic", model="claude-3-5-sonnet"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        chain = model.with_structured_output(_Finding, include_raw=True)
+        result = chain.invoke([HumanMessage(content="analyze")])
+
+        assert isinstance(result, dict)
+        assert isinstance(result["raw"], AIMessage)
+        assert isinstance(result["parsed"], _Finding)
+        assert result["parsing_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Generation parameters (max_tokens, top_p, seed)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerationParameters:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    @pytest.fixture
+    def mock_http_client(self):
+        client = MagicMock()
+        client.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": "Hello"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                "model": "gpt-4o",
+            }),
+        )
+        return client
+
+    def test_max_tokens_forwarded_when_set(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+            max_tokens=512,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert body["max_tokens"] == 512
+
+    def test_top_p_forwarded_when_set(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+            top_p=0.9,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert body["top_p"] == 0.9
+
+    def test_seed_forwarded_when_set(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+            seed=42,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert body["seed"] == 42
+
+    def test_all_generation_params_forwarded_together(
+        self, mock_gateway_client, mock_http_client
+    ):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+            max_tokens=1024,
+            top_p=0.95,
+            seed=7,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert body["max_tokens"] == 1024
+        assert body["top_p"] == 0.95
+        assert body["seed"] == 7
+
+    def test_max_tokens_absent_when_none(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert "max_tokens" not in body
+
+    def test_top_p_absent_when_none(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert "top_p" not in body
+
+    def test_seed_absent_when_none(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert "seed" not in body
+
+
+# ---------------------------------------------------------------------------
+# Tool calling
+# ---------------------------------------------------------------------------
+
+
+class TestToolCalling:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    @pytest.fixture
+    def mock_http_client(self):
+        client = MagicMock()
+        client.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                "model": "gpt-4o",
+            }),
+        )
+        return client
+
+    def test_messages_to_dicts_ai_message_with_tool_calls(self):
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_abc123",
+                    "name": "get_weather",
+                    "args": {"location": "NYC"},
+                },
+            ],
+        )
+        result = _messages_to_dicts([ai_msg])
+
+        assert len(result) == 1
+        d = result[0]
+        assert d["role"] == "assistant"
+        assert d["content"] == ""
+        assert len(d["tool_calls"]) == 1
+
+        tc = d["tool_calls"][0]
+        assert tc["id"] == "call_abc123"
+        assert tc["type"] == "function"
+        assert tc["function"]["name"] == "get_weather"
+        assert json.loads(tc["function"]["arguments"]) == {"location": "NYC"}
+
+    def test_messages_to_dicts_ai_message_without_tool_calls(self):
+        ai_msg = AIMessage(content="plain response")
+        result = _messages_to_dicts([ai_msg])
+
+        assert len(result) == 1
+        d = result[0]
+        assert d["role"] == "assistant"
+        assert d["content"] == "plain response"
+        assert "tool_calls" not in d
+
+    def test_messages_to_dicts_tool_message(self):
+        tool_msg = ToolMessage(
+            content='{"temp": 72}',
+            tool_call_id="call_abc123",
+        )
+        result = _messages_to_dicts([tool_msg])
+
+        assert len(result) == 1
+        d = result[0]
+        assert d["role"] == "tool"
+        assert d["tool_call_id"] == "call_abc123"
+        assert d["content"] == '{"temp": 72}'
+
+    def test_messages_to_dicts_full_tool_call_conversation(self):
+        """Verify a complete tool-calling conversation converts correctly."""
+        msgs = [
+            HumanMessage(content="What's the weather?"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "name": "get_weather",
+                        "args": {"city": "SF"},
+                    },
+                ],
+            ),
+            ToolMessage(content='{"temp": 65}', tool_call_id="call_1"),
+            AIMessage(content="It's 65 degrees in SF."),
+        ]
+        result = _messages_to_dicts(msgs)
+
+        assert len(result) == 4
+        assert result[0]["role"] == "user"
+        assert result[1]["role"] == "assistant"
+        assert "tool_calls" in result[1]
+        assert result[2]["role"] == "tool"
+        assert result[2]["tool_call_id"] == "call_1"
+        assert result[3]["role"] == "assistant"
+        assert "tool_calls" not in result[3]
+
+    def test_response_with_tool_calls_parsed(self, mock_gateway_client):
+        """Response containing tool_calls sets tool_calls on AIMessage."""
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_xyz",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"query": "langchain"}',
+                                },
+                            },
+                        ],
+                    },
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 12, "total_tokens": 20},
+                "model": "gpt-4o",
+            }),
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        result = model.invoke([HumanMessage(content="search for langchain")])
+
+        assert isinstance(result, AIMessage)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["id"] == "call_xyz"
+        assert result.tool_calls[0]["name"] == "search"
+        assert result.tool_calls[0]["args"] == {"query": "langchain"}
+
+    def test_tools_kwarg_forwarded_in_request_body(
+        self, mock_gateway_client, mock_http_client
+    ):
+        """tools kwarg from bind() is forwarded in the request body."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"},
+                        },
+                        "required": ["location"],
+                    },
+                },
+            },
+        ]
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        bound = model.bind(tools=tools)
+        bound.invoke([HumanMessage(content="weather in NYC")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert body["tools"] == tools
+
+    def test_tools_absent_when_not_bound(self, mock_gateway_client, mock_http_client):
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http_client,
+        )
+        model.invoke([HumanMessage(content="test")])
+
+        body = mock_http_client.request.call_args.kwargs["body"]
+        assert "tools" not in body
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking (usage_metadata)
+# ---------------------------------------------------------------------------
+
+
+class TestTokenUsageTracking:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    def test_usage_metadata_set_on_ai_message(self, mock_gateway_client):
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": "Hello"}}],
+                "usage": {
+                    "prompt_tokens": 25,
+                    "completion_tokens": 10,
+                    "total_tokens": 35,
+                },
+                "model": "gpt-4o",
+            }),
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        result = model.invoke([HumanMessage(content="test")])
+
+        assert result.usage_metadata is not None
+        assert result.usage_metadata["input_tokens"] == 25
+        assert result.usage_metadata["output_tokens"] == 10
+        assert result.usage_metadata["total_tokens"] == 35
+
+    def test_usage_metadata_absent_when_no_usage_in_response(self, mock_gateway_client):
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            data=json.dumps({
+                "choices": [{"message": {"content": "Hello"}}],
+                "model": "gpt-4o",
+            }),
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+        result = model.invoke([HumanMessage(content="test")])
+
+        # usage_metadata should be empty/absent when no usage in response
+        assert not result.usage_metadata
+
+
+# ---------------------------------------------------------------------------
+# Streaming (_stream)
+# ---------------------------------------------------------------------------
+
+
+class TestStreaming:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    def test_stream_yields_chunks(self, mock_gateway_client):
+        mock_http = MagicMock()
+        sse_lines = [
+            b'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+            b'data: {"choices": [{"delta": {"content": " world"}}]}',
+            b"data: [DONE]",
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 2
+        assert isinstance(chunks[0], ChatGenerationChunk)
+        assert chunks[0].message.content == "Hello"
+        assert isinstance(chunks[1], ChatGenerationChunk)
+        assert chunks[1].message.content == " world"
+
+    def test_stream_done_terminates(self, mock_gateway_client):
+        """data: [DONE] stops yielding even if more lines follow."""
+        mock_http = MagicMock()
+        sse_lines = [
+            b'data: {"choices": [{"delta": {"content": "first"}}]}',
+            b"data: [DONE]",
+            b'data: {"choices": [{"delta": {"content": "ignored"}}]}',
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.content == "first"
+
+    def test_stream_skips_empty_lines(self, mock_gateway_client):
+        mock_http = MagicMock()
+        sse_lines = [
+            b"",
+            b'data: {"choices": [{"delta": {"content": "hi"}}]}',
+            b"",
+            b"data: [DONE]",
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.content == "hi"
+
+    def test_stream_skips_non_data_lines(self, mock_gateway_client):
+        mock_http = MagicMock()
+        sse_lines = [
+            b": keep-alive comment",
+            b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+            b"event: done",
+            b"data: [DONE]",
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.content == "ok"
+
+    def test_stream_skips_empty_content_deltas(self, mock_gateway_client):
+        mock_http = MagicMock()
+        sse_lines = [
+            b'data: {"choices": [{"delta": {"role": "assistant"}}]}',
+            b'data: {"choices": [{"delta": {"content": "text"}}]}',
+            b'data: {"choices": [{"delta": {"content": ""}}]}',
+            b"data: [DONE]",
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.content == "text"
+
+    def test_stream_skips_invalid_json(self, mock_gateway_client):
+        mock_http = MagicMock()
+        sse_lines = [
+            b"data: {invalid json}",
+            b'data: {"choices": [{"delta": {"content": "valid"}}]}',
+            b"data: [DONE]",
+        ]
+        mock_http.request_stream.return_value = iter(sse_lines)
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        chunks = list(model._stream([HumanMessage(content="test")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.content == "valid"
+
+    def test_stream_sends_stream_true_in_body(self, mock_gateway_client):
+        mock_http = MagicMock()
+        mock_http.request_stream.return_value = iter([b"data: [DONE]"])
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        list(model._stream([HumanMessage(content="test")]))
+
+        call_args = mock_http.request_stream.call_args
+        body = call_args.kwargs["body"]
+        assert body["stream"] is True
+
+    def test_stream_request_exception_wrapped(self, mock_gateway_client):
+        mock_http = MagicMock()
+        mock_http.request_stream.side_effect = RuntimeError("socket closed")
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=mock_http,
+        )
+
+        with pytest.raises(GatewayError, match="Gateway stream failed"):
+            list(model._stream([HumanMessage(content="test")]))
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (429 -> RateLimitError)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiting:
+    @pytest.fixture
+    def mock_gateway_client(self):
+        client = MagicMock()
+        client.get_credentials.return_value = GatewayCredentials(
+            spiffe_jwt="test-svid",
+            trat="test-trat",
+        )
+        return client
+
+    def test_429_raises_rate_limit_error(self, mock_gateway_client):
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=429,
+            headers={},
+            data="Too Many Requests",
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+
+        with pytest.raises(RateLimitError, match="429"):
+            model.invoke([HumanMessage(content="test")])
+
+    def test_rate_limit_error_is_gateway_error_subclass(self, mock_gateway_client):
+        """RateLimitError inherits from GatewayError."""
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=429,
+            headers={},
+            data="rate limited",
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+
+        with pytest.raises(GatewayError):
+            model.invoke([HumanMessage(content="test")])
+
+    def test_rate_limit_error_has_correct_exit_code(self, mock_gateway_client):
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=429,
+            headers={},
+            data="rate limited",
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+
+        with pytest.raises(RateLimitError) as exc_info:
+            model.invoke([HumanMessage(content="test")])
+        assert exc_info.value.exit_code == 31
+
+    def test_rate_limit_error_includes_response_body(self, mock_gateway_client):
+        http = MagicMock()
+        http.request.return_value = HttpResponse(
+            status=429,
+            headers={},
+            data="retry after 30 seconds",
+        )
+
+        model = GatewayChatModel(
+            model_ref=ModelRef(provider="openai", model="gpt-4o"),
+            gateway_client=mock_gateway_client,
+            http_client=http,
+        )
+
+        with pytest.raises(RateLimitError, match="retry after 30 seconds"):
+            model.invoke([HumanMessage(content="test")])
