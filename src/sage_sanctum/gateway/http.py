@@ -214,6 +214,43 @@ class GatewayHttpClient:
                 key, value = line.split(":", 1)
                 headers[key.strip().lower()] = value.strip()
 
+        # Decode chunked transfer encoding if present
+        if headers.get("transfer-encoding", "").lower() == "chunked":
+            body_bytes = self._decode_chunked(body_bytes)
+
         body = body_bytes.decode("utf-8", errors="replace")
 
         return HttpResponse(status=status, headers=headers, data=body)
+
+    @staticmethod
+    def _decode_chunked(data: bytes) -> bytes:
+        """Decode HTTP chunked transfer encoding."""
+        decoded = bytearray()
+        pos = 0
+        while pos < len(data):
+            # Find end of chunk size line
+            crlf = data.find(b"
+", pos)
+            if crlf == -1:
+                break
+            # Parse hex chunk size (ignore extensions after semicolon)
+            size_str = data[pos:crlf].split(b";")[0].strip()
+            if not size_str:
+                break
+            try:
+                chunk_size = int(size_str, 16)
+            except ValueError:
+                break
+            if chunk_size == 0:
+                break  # Terminal chunk
+            # Extract chunk data
+            chunk_start = crlf + 2
+            chunk_end = chunk_start + chunk_size
+            if chunk_end > len(data):
+                # Incomplete chunk — take what we have
+                decoded.extend(data[chunk_start:])
+                break
+            decoded.extend(data[chunk_start:chunk_end])
+            # Skip trailing CRLF after chunk data
+            pos = chunk_end + 2
+        return bytes(decoded)
