@@ -26,7 +26,7 @@ Agent -> (UDS) -> Proxy -> (TCP) -> LLM Gateway -> Provider (OpenAI/Anthropic/Go
 | `src/sage_sanctum/llm/gateway_embeddings.py` | `GatewayEmbeddings` — LangChain `Embeddings` over gateway |
 | `src/sage_sanctum/auth/trat.py` | Transaction Token parsing and client |
 | `src/sage_sanctum/auth/spiffe.py` | SPIFFE JWT source |
-| `src/sage_sanctum/errors.py` | Error hierarchy with exit codes (10-69) |
+| `src/sage_sanctum/errors.py` | Error hierarchy with exit codes (10-79) |
 | `src/sage_sanctum/io/` | Input (RepositoryInput) and output (SARIF) types |
 | `src/sage_sanctum/testing/mocks.py` | Mock implementations for testing |
 
@@ -38,7 +38,7 @@ uv run pytest tests/ -v
 
 ## Conventions
 
-- **Error hierarchy**: Every error has an `exit_code` (10-69). `AgentRunner` maps these to process exit codes.
+- **Error hierarchy**: Every error has an `exit_code` (10-79). `AgentRunner` maps these to process exit codes.
 - **Factory methods**: Use `AgentContext.from_environment()` (prod) or `.for_local_development()` (dev).
 - **Dual-mode design**: Gateway mode (UDS + SPIFFE) vs direct mode (API keys). Controlled by `SAGE_SANCTUM_ALLOW_DIRECT`.
 - **Model selection**: TraT's `tctx.allowed_models` per category (triage/analysis/reasoning/embeddings).
