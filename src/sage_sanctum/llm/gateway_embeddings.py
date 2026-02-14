@@ -7,19 +7,19 @@ calls over Unix sockets with SPIFFE + TraT auth headers per request.
 from __future__ import annotations
 
 import json
-import logging
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.embeddings import Embeddings
 
 from ..errors import GatewayError
 from ..gateway.http import GatewayHttpClient
+from ..logging import get_logger
 from .model_ref import ModelRef
 
 if TYPE_CHECKING:
     from ..gateway.client import GatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GatewayEmbeddings(Embeddings):

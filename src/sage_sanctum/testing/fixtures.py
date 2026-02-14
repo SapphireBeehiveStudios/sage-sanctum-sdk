@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import pytest
@@ -10,6 +9,7 @@ import pytest
 from ..auth.trat import TransactionToken
 from ..context import AgentContext
 from ..llm.model_selector import StaticModelSelector
+from ..logging import get_logger
 from .mocks import MockGatewayClient, MockTratClient
 
 
@@ -55,5 +55,5 @@ def mock_context(tmp_path: Path, mock_gateway: MockGatewayClient) -> AgentContex
         output_dir=tmp_path / "output",
         gateway_client=mock_gateway,
         model_selector=StaticModelSelector("gpt-4o"),
-        logger=logging.getLogger("test"),
+        logger=get_logger("test"),
     )

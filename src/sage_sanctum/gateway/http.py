@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import random
 import socket
 import time
@@ -12,8 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import GatewayError, GatewayUnavailableError, RateLimitError
+from ..logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _BUFFER_SIZE = 65536
 _DEFAULT_TIMEOUT = 120  # seconds
@@ -137,8 +137,11 @@ class GatewayHttpClient:
                     if attempt < self._max_retries:
                         delay = self._retry_delay(attempt, response)
                         logger.warning(
-                            "Gateway returned %d, retrying in %.1fs (attempt %d/%d)",
-                            response.status, delay, attempt + 1, self._max_retries,
+                            "gateway_retry",
+                            status=response.status,
+                            delay=delay,
+                            attempt=attempt + 1,
+                            max_retries=self._max_retries,
                         )
                         time.sleep(delay)
                         continue
@@ -158,8 +161,11 @@ class GatewayHttpClient:
                 if attempt < self._max_retries:
                     delay = self._retry_delay(attempt)
                     logger.warning(
-                        "Gateway request failed: %s, retrying in %.1fs (attempt %d/%d)",
-                        e, delay, attempt + 1, self._max_retries,
+                        "gateway_connection_retry",
+                        error=str(e),
+                        delay=delay,
+                        attempt=attempt + 1,
+                        max_retries=self._max_retries,
                     )
                     time.sleep(delay)
                     continue

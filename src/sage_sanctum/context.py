@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import structlog
 from langchain_core.language_models import BaseChatModel
 
 from .auth.spiffe import JWTSource
@@ -19,8 +19,9 @@ from .llm.gateway_chat import create_llm_for_gateway
 from .llm.gateway_embeddings import create_embeddings_for_gateway
 from .llm.model_category import ModelCategory
 from .llm.model_selector import ModelSelector, StaticModelSelector
+from .logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -59,7 +60,7 @@ class AgentContext:
     output_dir: Path
     gateway_client: GatewayClient
     model_selector: ModelSelector
-    logger: logging.Logger = field(default_factory=lambda: logging.getLogger("sage_sanctum"))
+    logger: structlog.stdlib.BoundLogger = field(default_factory=lambda: get_logger("sage_sanctum"))
 
     def create_llm_client(self, category: ModelCategory) -> BaseChatModel:
         """Create an LLM client for the specified model category.
@@ -78,7 +79,7 @@ class AgentContext:
             ModelNotAvailableError: If no model is configured for the category.
         """
         model_ref = self.model_selector.select(category)
-        logger.debug("Creating LLM client for %s: %s", category.value, model_ref)
+        logger.debug("creating_llm_client", category=category.value, model_ref=str(model_ref))
         return create_llm_for_gateway(
             model_ref=model_ref,
             gateway_client=self.gateway_client,
@@ -102,7 +103,7 @@ class AgentContext:
         Returns:
             A LangChain ``Embeddings`` instance.
         """
-        logger.debug("Creating embeddings client: model=%s provider=%s", model, provider)
+        logger.debug("creating_embeddings_client", model=model, provider=provider)
         return create_embeddings_for_gateway(
             model=model,
             gateway_client=self.gateway_client,

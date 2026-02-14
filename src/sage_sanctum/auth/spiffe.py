@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import time
 from pathlib import Path
 
 from ..errors import SpiffeAuthError
+from ..logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Refresh JWT 5 minutes before expiry
 _REFRESH_BUFFER_SECONDS = 300
@@ -123,9 +123,9 @@ class JWTSource:
         self._cached_expiry = exp_float
 
         logger.debug(
-            "Refreshed SPIFFE JWT from %s (expires at %s)",
-            self._path,
-            self._cached_expiry,
+            "spiffe_jwt_refreshed",
+            path=str(self._path),
+            expiry=str(self._cached_expiry),
         )
         return token
 
