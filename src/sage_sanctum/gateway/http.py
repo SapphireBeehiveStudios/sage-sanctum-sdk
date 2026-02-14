@@ -229,8 +229,7 @@ class GatewayHttpClient:
         pos = 0
         while pos < len(data):
             # Find end of chunk size line
-            crlf = data.find(b"
-", pos)
+            crlf = data.find(b"\r\n", pos)
             if crlf == -1:
                 break
             # Parse hex chunk size (ignore extensions after semicolon)
