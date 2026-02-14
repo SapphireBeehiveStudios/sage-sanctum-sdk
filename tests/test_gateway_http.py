@@ -340,6 +340,70 @@ class TestSendRawUnixSocket:
             assert resp.status == 200
             assert json.loads(resp.data) == {"status": "ok"}
 
+    def test_post_json_roundtrip_over_unix_socket(self):
+        """POST with JSON body and JSON response over a real AF_UNIX socket."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as short_dir:
+            sock_path = Path(short_dir) / "t.sock"
+
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(sock_path))
+            server.listen(1)
+            server.settimeout(5)
+
+            captured = {}
+
+            def handler():
+                conn, _ = server.accept()
+                raw_request = conn.recv(65536)
+                captured["request"] = raw_request
+
+                # Build response
+                body = json.dumps({
+                    "data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}],
+                    "model": "text-embedding-3-small",
+                }).encode()
+                response = (
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                    b"\r\n" + body
+                )
+                conn.sendall(response)
+                conn.close()
+                server.close()
+
+            t = threading.Thread(target=handler, daemon=True)
+            t.start()
+
+            client = GatewayHttpClient(socket_path=sock_path, timeout=5)
+            resp = client.request(
+                method="POST",
+                path="/v1/embeddings",
+                headers={"Authorization": "Bearer test-jwt", "Txn-Token": "test-trat"},
+                body={"model": "text-embedding-3-small", "input": ["hello"]},
+            )
+
+            t.join(timeout=5)
+
+            # Verify response
+            assert resp.status == 200
+            parsed = json.loads(resp.data)
+            assert parsed["data"][0]["embedding"] == [0.1, 0.2, 0.3]
+
+            # Verify request was well-formed
+            raw = captured["request"].decode()
+            assert raw.startswith("POST /v1/embeddings HTTP/1.1\r\n")
+            assert "Content-Type: application/json" in raw
+            assert "Authorization: Bearer test-jwt" in raw
+            assert "Txn-Token: test-trat" in raw
+            # Body is after the header separator
+            body_start = raw.index("\r\n\r\n") + 4
+            request_body = json.loads(raw[body_start:])
+            assert request_body["model"] == "text-embedding-3-small"
+            assert request_body["input"] == ["hello"]
+
     def test_connection_refused_raises(self, tmp_path):
         sock_path = tmp_path / "nonexistent.sock"
         client = GatewayHttpClient(socket_path=sock_path, timeout=1)

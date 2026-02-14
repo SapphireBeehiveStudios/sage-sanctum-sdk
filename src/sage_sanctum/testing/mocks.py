@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -212,3 +213,45 @@ class MockTratClient:
                 actor="dependabot[bot]",
             ),
         )
+
+
+class MockEmbeddings(Embeddings):
+    """Mock LangChain embeddings for testing.
+
+    Returns deterministic fixed-dimension vectors and records every call.
+
+    Attributes:
+        dimension: Dimension of returned vectors. Defaults to ``8``.
+        calls: List of input lists received — one entry per call.
+
+    Example:
+        ```python
+        embeddings = MockEmbeddings(dimension=4)
+        vecs = embeddings.embed_documents(["hello", "world"])
+        assert len(vecs) == 2
+        assert len(vecs[0]) == 4
+        assert len(embeddings.calls) == 1
+        ```
+    """
+
+    def __init__(self, dimension: int = 8) -> None:
+        self.dimension = dimension
+        self.calls: list[list[str]] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Return deterministic vectors (hash-based) for each text."""
+        self.calls.append(texts)
+        return [self._deterministic_vector(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Return a deterministic vector for a single query."""
+        self.calls.append([text])
+        return self._deterministic_vector(text)
+
+    def _deterministic_vector(self, text: str) -> list[float]:
+        """Generate a reproducible unit-length vector from text."""
+        h = hash(text)
+        raw = [float((h >> (i * 8)) & 0xFF) / 255.0 for i in range(self.dimension)]
+        # Normalize to unit length
+        magnitude = sum(x * x for x in raw) ** 0.5 or 1.0
+        return [x / magnitude for x in raw]

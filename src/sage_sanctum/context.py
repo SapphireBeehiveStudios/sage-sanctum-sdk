@@ -16,6 +16,7 @@ from .gateway.client import DirectProviderClient, GatewayClient, SpiffeGatewayCl
 from .io.inputs import RepositoryInput
 from .io.outputs import AgentOutput
 from .llm.gateway_chat import create_llm_for_gateway
+from .llm.gateway_embeddings import create_embeddings_for_gateway
 from .llm.model_category import ModelCategory
 from .llm.model_selector import ModelSelector, StaticModelSelector
 
@@ -80,6 +81,28 @@ class AgentContext:
         logger.debug("Creating LLM client for %s: %s", category.value, model_ref)
         return create_llm_for_gateway(
             model_ref=model_ref,
+            gateway_client=self.gateway_client,
+        )
+
+    def create_embeddings_client(
+        self,
+        model: str = "text-embedding-3-small",
+    ) -> "Embeddings":
+        """Create an embeddings client routed through the gateway.
+
+        In gateway mode, returns a ``GatewayEmbeddings`` instance that
+        communicates over UDS with SPIFFE + TraT auth. In direct mode,
+        returns ``OpenAIEmbeddings`` with env-var API keys.
+
+        Args:
+            model: Embedding model name. Defaults to ``"text-embedding-3-small"``.
+
+        Returns:
+            A LangChain ``Embeddings`` instance.
+        """
+        logger.debug("Creating embeddings client: model=%s", model)
+        return create_embeddings_for_gateway(
+            model=model,
             gateway_client=self.gateway_client,
         )
 
