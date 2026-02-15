@@ -9,6 +9,7 @@ SDK for building agents that run within the [Sage Sanctum](https://sagesecurity.
 - **LLM Gateway Integration** - Route LLM calls through authenticated, policy-enforced gateways
 - **Multi-Provider Support** - OpenAI, Anthropic, and Google via unified interface
 - **SARIF Output** - Standard static analysis output format for GitHub Code Scanning
+- **External LLM Support** - Wrap tools like Claude Code (via Agent SDK) that manage their own LLM calls
 - **Testing Utilities** - Mock gateway, LLM, and TraT clients for unit testing
 
 ## Quick Start
@@ -20,7 +21,7 @@ from sage_sanctum.io.outputs import SarifOutput, Finding, Location
 from sage_sanctum.llm.model_category import ModelCategory
 
 
-class MySecurityAgent(SageSanctumAgent):
+class MySecurityAgent(SageSanctumAgent[RepositoryInput]):
     @property
     def name(self) -> str:
         return "my-security-agent"
@@ -29,7 +30,7 @@ class MySecurityAgent(SageSanctumAgent):
     def version(self) -> str:
         return "0.1.0"
 
-    async def run(self, agent_input: AgentInput) -> AgentResult:
+    async def run(self, agent_input: RepositoryInput) -> AgentResult:
         # Get an LLM client for analysis
         llm = self.context.create_llm_client(ModelCategory.ANALYSIS)
 
@@ -70,6 +71,23 @@ Agent Pod (seccomp: no AF_INET)
        └── Gateway Client (Unix socket)
             └── LLM Gateway → OpenAI / Anthropic / Google
 ```
+
+### External LLM Mode
+
+For agents that wrap tools like Claude Code (via the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)), set `requires_gateway = False`. The SDK handles only I/O and lifecycle; the external tool communicates with the gateway independently via a socat TCP-to-UDS bridge:
+
+```
+Agent Pod
+├── Python Agent (requires_gateway=False)
+│   └── Claude Agent SDK (async subprocess)
+│       └── ANTHROPIC_BASE_URL=http://127.0.0.1:8082
+├── socat bridge (TCP:8082 -> UDS:/run/gateway.sock)
+└── LLM Gateway sidecar (credential injection, routing)
+```
+
+## Documentation
+
+Full documentation is available at [sapphirebeehivestudios.github.io/sage-sanctum-sdk](https://sapphirebeehivestudios.github.io/sage-sanctum-sdk/).
 
 ## License
 

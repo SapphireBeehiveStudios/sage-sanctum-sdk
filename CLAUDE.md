@@ -10,9 +10,11 @@ SDK for building agents that run within the Sage Sanctum infrastructure. Handles
 Agent -> (UDS) -> Proxy -> (TCP) -> LLM Gateway -> Provider (OpenAI/Anthropic/Google)
 ```
 
-- **Production**: AF_UNIX sockets only (AF_INET blocked by seccomp)
-- **Local dev**: Direct provider API calls via `SAGE_SANCTUM_ALLOW_DIRECT=1`
-- Auth: SPIFFE JWT (identity) + TraT (transaction authorization) per request
+Three modes of operation:
+
+- **Gateway mode** (production): AF_UNIX sockets only (AF_INET blocked by seccomp). SPIFFE JWT + TraT per request.
+- **Direct mode** (local dev): Direct provider API calls via `SAGE_SANCTUM_ALLOW_DIRECT=1`.
+- **External LLM mode**: For agents wrapping external tools (e.g., Claude Code via Agent SDK) that manage their own LLM calls. SDK handles only I/O and lifecycle; external tool talks to gateway independently (e.g., via socat TCP-to-UDS bridge). Set `requires_gateway = False` on the agent class.
 
 ## Key Files
 
@@ -39,8 +41,9 @@ uv run pytest tests/ -v
 ## Conventions
 
 - **Error hierarchy**: Every error has an `exit_code` (10-79). `AgentRunner` maps these to process exit codes.
-- **Factory methods**: Use `AgentContext.from_environment()` (prod) or `.for_local_development()` (dev).
-- **Dual-mode design**: Gateway mode (UDS + SPIFFE) vs direct mode (API keys). Controlled by `SAGE_SANCTUM_ALLOW_DIRECT`.
+- **Factory methods**: Use `AgentContext.from_environment()` (prod), `.for_local_development()` (dev), or `.for_external_llm()` (external tool agents).
+- **Three-mode design**: Gateway mode (UDS + SPIFFE), direct mode (API keys via `SAGE_SANCTUM_ALLOW_DIRECT`), or external LLM mode (`requires_gateway = False`).
+- **Generic agent base**: `SageSanctumAgent[InputT]` is generic over input type (e.g., `SageSanctumAgent[RepositoryInput]`).
 - **Model selection**: TraT's `tctx.allowed_models` per category (triage/analysis/reasoning/embeddings).
 - **Version**: Single source of truth in `pyproject.toml`, read via `importlib.metadata`.
 
