@@ -149,6 +149,69 @@ class TestFromEnvironment:
             AgentContext.from_environment()
 
 
+class TestForExternalLlm:
+    def test_creates_minimal_context(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run-ext")
+        monkeypatch.setenv("ORG_ID", "org-ext")
+
+        ctx = AgentContext.for_external_llm()
+        assert ctx.run_id == "run-ext"
+        assert ctx.org_id == "org-ext"
+        assert ctx.gateway_client is None
+        assert ctx.model_selector is None
+
+    def test_missing_run_id_raises(self, monkeypatch):
+        monkeypatch.delenv("RUN_ID", raising=False)
+        monkeypatch.setenv("ORG_ID", "org")
+        with pytest.raises(ConfigurationError, match="RUN_ID"):
+            AgentContext.for_external_llm()
+
+    def test_missing_org_id_raises(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.delenv("ORG_ID", raising=False)
+        with pytest.raises(ConfigurationError, match="ORG_ID"):
+            AgentContext.for_external_llm()
+
+    def test_create_llm_client_raises_without_gateway(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.setenv("ORG_ID", "org")
+        ctx = AgentContext.for_external_llm()
+        with pytest.raises(ConfigurationError, match="create_llm_client"):
+            ctx.create_llm_client(ModelCategory.ANALYSIS)
+
+    def test_create_embeddings_client_raises_without_gateway(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.setenv("ORG_ID", "org")
+        ctx = AgentContext.for_external_llm()
+        with pytest.raises(ConfigurationError, match="create_embeddings_client"):
+            ctx.create_embeddings_client()
+
+    def test_check_gateway_health_returns_false_without_gateway(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.setenv("ORG_ID", "org")
+        ctx = AgentContext.for_external_llm()
+        assert ctx.check_gateway_health() is False
+
+    def test_load_input_works_without_gateway(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.setenv("ORG_ID", "org")
+        monkeypatch.setenv("REPO_PATH", str(repo_dir))
+        ctx = AgentContext.for_external_llm()
+        repo_input = ctx.load_input()
+        assert repo_input.path == Path(str(repo_dir))
+
+    def test_custom_work_dir_and_output(self, monkeypatch):
+        monkeypatch.setenv("RUN_ID", "run")
+        monkeypatch.setenv("ORG_ID", "org")
+        monkeypatch.setenv("WORK_DIR", "/custom/work")
+        monkeypatch.setenv("OUTPUT_PATH", "/custom/output")
+        ctx = AgentContext.for_external_llm()
+        assert ctx.work_dir == Path("/custom/work")
+        assert ctx.output_dir == Path("/custom/output")
+
+
 class TestForLocalDevelopment:
     def test_creates_direct_context(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

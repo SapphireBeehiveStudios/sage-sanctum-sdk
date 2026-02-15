@@ -7,13 +7,15 @@ import signal
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from .context import AgentContext
 from .errors import SageSanctumError
 from .io.inputs import AgentInput
 from .io.outputs import AgentOutput
 from .logging import configure_logging, get_logger
+
+InputT = TypeVar("InputT", bound=AgentInput)
 
 logger = get_logger(__name__)
 
@@ -40,12 +42,16 @@ class AgentResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class SageSanctumAgent(ABC):
+class SageSanctumAgent(ABC, Generic[InputT]):
     """Base class for Sage Sanctum agents.
 
     Subclasses implement three members: ``name``, ``version``, and the async
     ``run()`` method. The SDK handles authentication, context initialization,
     and output writing.
+
+    Set ``requires_gateway = False`` on subclasses that manage their own
+    LLM access (e.g. wrapping an external CLI tool). The runner will skip
+    gateway/SPIFFE setup and use ``AgentContext.for_external_llm()`` instead.
 
     Example:
         ```python
@@ -66,10 +72,32 @@ class SageSanctumAgent(ABC):
 
     Attributes:
         context: The runtime context providing LLM clients, I/O, and metadata.
+        requires_gateway: Whether the agent needs the LLM gateway. Defaults to ``True``.
     """
 
-    def __init__(self, context: AgentContext) -> None:
+    requires_gateway: bool = True
+
+    def __init__(
+        self,
+        context: AgentContext,
+        *,
+        _shutdown_event: asyncio.Event | None = None,
+    ) -> None:
         self.context = context
+        self._shutdown_event: asyncio.Event = _shutdown_event or asyncio.Event()
+
+    @property
+    def shutdown_requested(self) -> bool:
+        """Whether a shutdown signal has been received."""
+        return self._shutdown_event.is_set()
+
+    async def wait_for_shutdown(self) -> None:
+        """Wait until a shutdown signal is received.
+
+        Useful for racing against a subprocess: whichever completes first
+        (the subprocess or shutdown) wins.
+        """
+        await self._shutdown_event.wait()
 
     @property
     @abstractmethod
@@ -82,7 +110,7 @@ class SageSanctumAgent(ABC):
         """Agent version."""
 
     @abstractmethod
-    async def run(self, agent_input: AgentInput) -> AgentResult:
+    async def run(self, agent_input: InputT) -> AgentResult:
         """Execute the agent's main logic.
 
         Args:
@@ -152,10 +180,13 @@ class AgentRunner:
 
         # Initialize context
         logger.info("initializing_context")
-        context = await AgentContext.from_environment_async()
+        if self._agent_class.requires_gateway:
+            context = await AgentContext.from_environment_async()
+        else:
+            context = AgentContext.for_external_llm()
 
-        # Create agent
-        agent = self._agent_class(context)
+        # Create agent with the shared shutdown event
+        agent = self._agent_class(context, _shutdown_event=self._shutdown_event)
         logger.info(
             "agent_starting",
             agent=agent.name,

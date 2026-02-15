@@ -7,7 +7,7 @@ import pytest
 
 from sage_sanctum.agent import AgentResult, AgentRunner, SageSanctumAgent
 from sage_sanctum.errors import SpiffeAuthError
-from sage_sanctum.io.inputs import AgentInput
+from sage_sanctum.io.inputs import AgentInput, RepositoryInput
 from sage_sanctum.io.outputs import SarifOutput
 
 
@@ -118,6 +118,135 @@ class SlowAgent(SageSanctumAgent):
     async def run(self, agent_input: AgentInput) -> AgentResult:
         await asyncio.sleep(3600)  # Block for a long time
         return AgentResult(exit_code=0)
+
+
+class ExternalLlmAgent(SageSanctumAgent):
+    """Agent that doesn't need the gateway."""
+
+    requires_gateway = False
+
+    @property
+    def name(self) -> str:
+        return "external-agent"
+
+    @property
+    def version(self) -> str:
+        return "0.1.0"
+
+    async def run(self, agent_input: AgentInput) -> AgentResult:
+        # Verify we don't have gateway access
+        assert self.context.gateway_client is None
+        return AgentResult(exit_code=0)
+
+
+class ShutdownAwareAgent(SageSanctumAgent):
+    """Agent that uses the shutdown event for cooperative cancellation."""
+
+    requires_gateway = False
+
+    @property
+    def name(self) -> str:
+        return "shutdown-aware"
+
+    @property
+    def version(self) -> str:
+        return "0.1.0"
+
+    async def run(self, agent_input: AgentInput) -> AgentResult:
+        # Race subprocess work against shutdown
+        shutdown_task = asyncio.create_task(self.wait_for_shutdown())
+        work_task = asyncio.create_task(asyncio.sleep(3600))
+
+        done, pending = await asyncio.wait(
+            {shutdown_task, work_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        if shutdown_task in done:
+            return AgentResult(exit_code=130)
+
+        return AgentResult(exit_code=0)
+
+
+class TypedAgent(SageSanctumAgent[RepositoryInput]):
+    """Agent with typed input."""
+
+    @property
+    def name(self) -> str:
+        return "typed-agent"
+
+    @property
+    def version(self) -> str:
+        return "0.1.0"
+
+    async def run(self, agent_input: RepositoryInput) -> AgentResult:
+        # Type narrowing works — can access .path directly
+        assert hasattr(agent_input, "path")
+        return AgentResult(exit_code=0)
+
+
+class TestRequiresGateway:
+    def test_external_llm_agent_skips_gateway(self, monkeypatch, tmp_path):
+        """Agents with requires_gateway=False skip SPIFFE/gateway setup."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        monkeypatch.setenv("RUN_ID", "test-run")
+        monkeypatch.setenv("ORG_ID", "test-org")
+        monkeypatch.setenv("REPO_PATH", str(repo_dir))
+        # Deliberately NOT setting SPIFFE/gateway vars
+
+        runner = AgentRunner(ExternalLlmAgent)
+        exit_code = runner.run()
+        assert exit_code == 0
+
+
+class TestShutdownEventPropagation:
+    def test_shutdown_event_shared_with_agent(self, monkeypatch, tmp_path):
+        """Verify the runner shares its shutdown event with the agent instance."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        monkeypatch.setenv("RUN_ID", "test-run")
+        monkeypatch.setenv("ORG_ID", "test-org")
+        monkeypatch.setenv("REPO_PATH", str(repo_dir))
+
+        runner = AgentRunner(ShutdownAwareAgent)
+
+        async def run_with_signal():
+            task = asyncio.create_task(runner._run_async())
+            await asyncio.sleep(0.1)
+            import signal
+            runner._handle_signal(signal.SIGTERM)
+            return await task
+
+        exit_code = asyncio.run(run_with_signal())
+        # The runner returns 130 because the shutdown event fires
+        assert exit_code == 130
+
+
+class TestGenericInputType:
+    def test_typed_agent_runs(self, monkeypatch, tmp_path):
+        """Typed agent (SageSanctumAgent[RepositoryInput]) runs successfully."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        monkeypatch.setenv("RUN_ID", "test-run")
+        monkeypatch.setenv("ORG_ID", "test-org")
+        monkeypatch.setenv("SAGE_SANCTUM_ALLOW_DIRECT", "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("REPO_PATH", str(repo_dir))
+
+        runner = AgentRunner(TypedAgent)
+        exit_code = runner.run()
+        assert exit_code == 0
 
 
 class TestShutdownEvent:

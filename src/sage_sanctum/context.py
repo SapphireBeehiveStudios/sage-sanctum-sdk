@@ -58,8 +58,8 @@ class AgentContext:
     org_id: str
     work_dir: Path
     output_dir: Path
-    gateway_client: GatewayClient
-    model_selector: ModelSelector
+    gateway_client: GatewayClient | None = None
+    model_selector: ModelSelector | None = None
     logger: structlog.stdlib.BoundLogger = field(default_factory=lambda: get_logger("sage_sanctum"))
 
     def create_llm_client(self, category: ModelCategory) -> BaseChatModel:
@@ -76,8 +76,14 @@ class AgentContext:
             A LangChain ``BaseChatModel`` ready for ``invoke()`` calls.
 
         Raises:
+            ConfigurationError: If gateway_client or model_selector is not configured.
             ModelNotAvailableError: If no model is configured for the category.
         """
+        if self.gateway_client is None or self.model_selector is None:
+            raise ConfigurationError(
+                "create_llm_client() requires gateway_client and model_selector. "
+                "Use AgentContext.from_environment() or for_local_development() instead of for_external_llm()."
+            )
         model_ref = self.model_selector.select(category)
         logger.debug("creating_llm_client", category=category.value, model_ref=str(model_ref))
         return create_llm_for_gateway(
@@ -102,7 +108,15 @@ class AgentContext:
 
         Returns:
             A LangChain ``Embeddings`` instance.
+
+        Raises:
+            ConfigurationError: If gateway_client is not configured.
         """
+        if self.gateway_client is None:
+            raise ConfigurationError(
+                "create_embeddings_client() requires gateway_client. "
+                "Use AgentContext.from_environment() or for_local_development() instead of for_external_llm()."
+            )
         logger.debug("creating_embeddings_client", model=model, provider=provider)
         return create_embeddings_for_gateway(
             model=model,
@@ -117,8 +131,11 @@ class AgentContext:
         Returns ``False`` in direct mode since there is no gateway.
 
         Returns:
-            ``True`` if the gateway responds with 200, ``False`` otherwise.
+            ``True`` if the gateway responds with 200, ``False`` otherwise
+            (including when no gateway client is configured).
         """
+        if self.gateway_client is None:
+            return False
         if not self.gateway_client.is_gateway_mode:
             return False
 
@@ -233,6 +250,39 @@ class AgentContext:
             output_dir=Path(output_dir),
             gateway_client=DirectProviderClient(),
             model_selector=StaticModelSelector(model),
+        )
+
+    @classmethod
+    def for_external_llm(cls) -> AgentContext:
+        """Create a minimal context for agents that manage their own LLM access.
+
+        Only reads ``RUN_ID``, ``ORG_ID``, ``WORK_DIR``, and ``OUTPUT_PATH``
+        from the environment. Skips all SPIFFE, TraT, and gateway setup.
+
+        The resulting context has ``gateway_client=None`` and
+        ``model_selector=None``. Calling ``create_llm_client()``,
+        ``create_embeddings_client()``, or ``check_gateway_health()``
+        will raise ``ConfigurationError``.
+
+        Returns:
+            An ``AgentContext`` suitable for external-LLM agents.
+        """
+        run_id = os.environ.get("RUN_ID", "")
+        org_id = os.environ.get("ORG_ID", "")
+
+        if not run_id:
+            raise ConfigurationError("RUN_ID environment variable not set")
+        if not org_id:
+            raise ConfigurationError("ORG_ID environment variable not set")
+
+        work_dir = Path(os.environ.get("WORK_DIR", "/work"))
+        output_dir = Path(os.environ.get("OUTPUT_PATH", "/output"))
+
+        return cls(
+            run_id=run_id,
+            org_id=org_id,
+            work_dir=work_dir,
+            output_dir=output_dir,
         )
 
     @classmethod

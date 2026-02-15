@@ -14,7 +14,13 @@ except PackageNotFoundError:
 
 from .agent import AgentResult, AgentRunner, SageSanctumAgent
 from .context import AgentContext
-from .errors import SageSanctumError
+from .errors import (
+    ExternalToolError,
+    OutputParseError,
+    SageSanctumError,
+    SubprocessError,
+    SubprocessTimeoutError,
+)
 from .io.inputs import AgentInput, RepositoryInput
 from .io.outputs import AgentOutput, Finding, Location, SarifOutput, TokenUsage
 from .llm.model_category import ModelCategory
@@ -27,14 +33,18 @@ __all__ = [
     "AgentOutput",
     "AgentResult",
     "AgentRunner",
+    "ExternalToolError",
     "Finding",
     "Location",
     "ModelCategory",
     "ModelRef",
+    "OutputParseError",
     "RepositoryInput",
     "SageSanctumAgent",
     "SageSanctumError",
     "SarifOutput",
+    "SubprocessError",
+    "SubprocessTimeoutError",
     "TokenUsage",
     "configure_logging",
     "get_logger",

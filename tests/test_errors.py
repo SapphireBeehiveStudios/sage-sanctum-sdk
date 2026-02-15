@@ -3,6 +3,7 @@
 from sage_sanctum.errors import (
     AuthError,
     ConfigurationError,
+    ExternalToolError,
     ForbiddenError,
     GatewayError,
     GatewayUnavailableError,
@@ -12,6 +13,7 @@ from sage_sanctum.errors import (
     ModelNotAvailableError,
     ModelRefParseError,
     OutputError,
+    OutputParseError,
     OutputWriteError,
     PathTraversalError,
     RateLimitError,
@@ -19,6 +21,8 @@ from sage_sanctum.errors import (
     SarifValidationError,
     ScopeNotAuthorizedError,
     SpiffeAuthError,
+    SubprocessError,
+    SubprocessTimeoutError,
     TraTAcquisitionError,
     TraTExpiredError,
     ValidationError,
@@ -66,6 +70,30 @@ class TestErrorHierarchy:
         assert ModelError("x").exit_code == 60
         assert ModelNotAvailableError("x").exit_code == 61
         assert ModelRefParseError("x").exit_code == 62
+
+    def test_external_tool_errors(self):
+        assert ExternalToolError("x").exit_code == 70
+        assert SubprocessError("x").exit_code == 71
+        assert SubprocessTimeoutError("x").exit_code == 72
+        assert OutputParseError("x").exit_code == 73
+
+    def test_subprocess_error_attrs(self):
+        e = SubprocessError("failed", returncode=42, stderr="some error")
+        assert e.exit_code == 71
+        assert e.returncode == 42
+        assert e.stderr == "some error"
+        assert str(e) == "failed"
+
+    def test_subprocess_error_defaults(self):
+        e = SubprocessError("failed")
+        assert e.returncode == 1
+        assert e.stderr == ""
+
+    def test_external_tool_inheritance(self):
+        assert isinstance(SubprocessError("x"), ExternalToolError)
+        assert isinstance(SubprocessTimeoutError("x"), ExternalToolError)
+        assert isinstance(OutputParseError("x"), ExternalToolError)
+        assert isinstance(ExternalToolError("x"), SageSanctumError)
 
     def test_rate_limit_error_is_gateway_subclass(self):
         e = RateLimitError("rate limited")

@@ -7,6 +7,7 @@ Exit code ranges:
 - 40-49: Validation errors
 - 50-59: Output errors
 - 60-69: Model errors
+- 70-79: External tool errors
 """
 
 from __future__ import annotations
@@ -232,3 +233,52 @@ class ModelRefParseError(ModelError):
     """
 
     exit_code = 62
+
+
+# ============================================================================
+# External tool errors (70-79)
+# ============================================================================
+
+
+class ExternalToolError(SageSanctumError):
+    """Base external tool error (exit codes 70–79).
+
+    Raised when an external subprocess or tool used by the agent fails.
+    """
+
+    exit_code = 70
+
+
+class SubprocessError(ExternalToolError):
+    """External subprocess exited with a non-zero return code.
+
+    Attributes:
+        returncode: The process exit code.
+        stderr: Captured stderr output (may be truncated).
+    """
+
+    exit_code = 71
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int = 1,
+        stderr: str = "",
+        exit_code: int | None = None,
+    ):
+        super().__init__(message, exit_code=exit_code)
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+class SubprocessTimeoutError(ExternalToolError):
+    """External subprocess exceeded its time limit."""
+
+    exit_code = 72
+
+
+class OutputParseError(ExternalToolError):
+    """Failed to parse output from an external tool."""
+
+    exit_code = 73
