@@ -14,7 +14,7 @@ Three modes of operation:
 
 - **Gateway mode** (production): AF_UNIX sockets only (AF_INET blocked by seccomp). SPIFFE JWT + TraT per request.
 - **Direct mode** (local dev): Direct provider API calls via `SAGE_SANCTUM_ALLOW_DIRECT=1`.
-- **External LLM mode**: For agents wrapping external tools (e.g., Claude Code via Agent SDK) that manage their own LLM calls. SDK handles only I/O and lifecycle; external tool talks to gateway independently (e.g., via socat TCP-to-UDS bridge). Set `requires_gateway = False` on the agent class.
+- **External LLM mode**: For agents wrapping external tools (e.g., Claude Code via Agent SDK) that manage their own LLM calls. SDK handles only I/O and lifecycle; an auth-injecting bridge (`bridge.py`) reads SPIFFE JWT + TraT from files, injects auth headers, and forwards to the forwarder sidecar over UDS. Set `requires_gateway = False` on the agent class.
 
 ## Key Files
 

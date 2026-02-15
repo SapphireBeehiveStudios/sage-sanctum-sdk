@@ -74,15 +74,16 @@ Agent Pod (seccomp: no AF_INET)
 
 ### External LLM Mode
 
-For agents that wrap tools like Claude Code (via the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)), set `requires_gateway = False`. The SDK handles only I/O and lifecycle; the external tool communicates with the gateway independently via a socat TCP-to-UDS bridge:
+For agents that wrap tools like Claude Code (via the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)), set `requires_gateway = False`. The SDK handles only I/O and lifecycle; the external tool communicates with the gateway via an auth-injecting bridge:
 
 ```
-Agent Pod
+Scanner Pod
 ├── Python Agent (requires_gateway=False)
 │   └── Claude Agent SDK (async subprocess)
 │       └── ANTHROPIC_BASE_URL=http://127.0.0.1:8082
-├── socat bridge (TCP:8082 -> UDS:/run/gateway.sock)
-└── LLM Gateway sidecar (credential injection, routing)
+├── bridge.py (injects SPIFFE JWT + TraT headers)
+├── Forwarder sidecar (zero-logic, UDS -> central gateway)
+└── Central LLM Gateway (validates auth, BYOK key injection)
 ```
 
 ## Documentation
