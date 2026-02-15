@@ -78,6 +78,7 @@ nav:
   - Guides:
       - Configuration: guides/configuration.md
       - Error Handling: guides/error-handling.md
+      - Claude Code Integration: guides/claude-code.md
       - Testing: guides/testing.md
       - Examples: guides/examples.md
   - API Reference:

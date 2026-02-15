@@ -23,9 +23,13 @@ SageSanctumError (1)
 ├── OutputError (50)
 │   ├── OutputWriteError (51)
 │   └── SarifValidationError (52)
-└── ModelError (60)
-    ├── ModelNotAvailableError (61)
-    └── ModelRefParseError (62)
+├── ModelError (60)
+│   ├── ModelNotAvailableError (61)
+│   └── ModelRefParseError (62)
+└── ExternalToolError (70)
+    ├── SubprocessError (71)
+    ├── SubprocessTimeoutError (72)
+    └── OutputParseError (73)
 ```
 
 ## Exit Codes
@@ -36,12 +40,13 @@ The `AgentRunner` maps exceptions to exit codes automatically:
 |-------|----------|---------|
 | 0 | Success | Agent completed successfully |
 | 1 | General | Unhandled exception |
-| 10–19 | Authentication | Identity or token errors |
-| 20–29 | Authorization | Permission denied |
-| 30–39 | Gateway | LLM gateway errors |
-| 40–49 | Validation | Input or config errors |
-| 50–59 | Output | Output writing errors |
-| 60–69 | Model | Model selection errors |
+| 10-19 | Authentication | Identity or token errors |
+| 20-29 | Authorization | Permission denied |
+| 30-39 | Gateway | LLM gateway errors |
+| 40-49 | Validation | Input or config errors |
+| 50-59 | Output | Output writing errors |
+| 60-69 | Model | Model selection errors |
+| 70-79 | External Tool | Subprocess or external tool errors |
 
 ## Catching Errors
 
@@ -100,3 +105,31 @@ Or return it in the result:
 ```python
 return AgentResult(exit_code=2, error="Partial failure")
 ```
+
+## External Tool Errors
+
+When agents wrap external tools (e.g., Claude Code CLI), use the `ExternalToolError` family to report failures:
+
+```python
+from sage_sanctum.errors import SubprocessError, SubprocessTimeoutError, OutputParseError
+
+# Subprocess failed
+raise SubprocessError(
+    "Claude Code exited with error",
+    returncode=1,
+    stderr="Error: model not found",
+)
+
+# Subprocess timed out
+raise SubprocessTimeoutError("Claude Code exceeded 600s time limit")
+
+# Could not parse tool output
+raise OutputParseError("Failed to extract findings JSON from Claude Code output")
+```
+
+`SubprocessError` carries additional attributes:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `returncode` | `int` | The subprocess exit code (default: `1`) |
+| `stderr` | `str` | Captured stderr output |

@@ -32,6 +32,19 @@ context = AgentContext.for_local_development(
 
 Creates a context that calls LLM providers directly (no gateway). Requires `SAGE_SANCTUM_ALLOW_DIRECT=1`.
 
+### For External LLM Agents
+
+```python
+context = AgentContext.for_external_llm()
+```
+
+Creates a minimal context for agents that manage their own LLM access (e.g., wrapping Claude Code). Only reads `RUN_ID`, `ORG_ID`, `WORK_DIR`, and `OUTPUT_PATH` from the environment. Skips all SPIFFE, TraT, and gateway setup.
+
+The resulting context has `gateway_client=None` and `model_selector=None`. Calling `create_llm_client()` or `create_embeddings_client()` will raise `ConfigurationError`. Input loading and output writing work normally.
+
+!!! note
+    You don't need to call this factory directly. Set `requires_gateway = False` on your agent class and the `AgentRunner` will use it automatically. See [External LLM Agents](agents.md#external-llm-agents).
+
 ## Fields
 
 | Field | Type | Description |
@@ -40,8 +53,8 @@ Creates a context that calls LLM providers directly (no gateway). Requires `SAGE
 | `org_id` | `str` | Organization identifier |
 | `work_dir` | `Path` | Working directory for temporary files |
 | `output_dir` | `Path` | Directory where output is written |
-| `gateway_client` | `GatewayClient` | Client for LLM gateway access |
-| `model_selector` | `ModelSelector` | Resolves model categories to concrete models |
+| `gateway_client` | `GatewayClient | None` | Client for LLM gateway access (None for external-LLM agents) |
+| `model_selector` | `ModelSelector | None` | Resolves model categories to concrete models (None for external-LLM agents) |
 | `logger` | `logging.Logger` | Logger instance for the agent |
 
 ## Key Methods

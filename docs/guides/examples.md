@@ -6,12 +6,12 @@ Use different model categories for different stages of analysis:
 
 ```python
 from sage_sanctum import SageSanctumAgent, AgentResult
-from sage_sanctum.io.inputs import AgentInput, RepositoryInput
+from sage_sanctum.io.inputs import RepositoryInput
 from sage_sanctum.io.outputs import SarifOutput, Finding, Location
 from sage_sanctum.llm.model_category import ModelCategory
 
 
-class MultiModelAgent(SageSanctumAgent):
+class MultiModelAgent(SageSanctumAgent[RepositoryInput]):
     @property
     def name(self) -> str:
         return "multi-model-agent"
@@ -20,9 +20,8 @@ class MultiModelAgent(SageSanctumAgent):
     def version(self) -> str:
         return "1.0.0"
 
-    async def run(self, agent_input: AgentInput) -> AgentResult:
+    async def run(self, agent_input: RepositoryInput) -> AgentResult:
         repo = agent_input
-        assert isinstance(repo, RepositoryInput)
 
         # Stage 1: Triage — fast, cheap model to identify interesting files
         triage_llm = self.context.create_llm_client(ModelCategory.TRIAGE)
@@ -156,11 +155,11 @@ Add custom validation to your agent:
 
 ```python
 from sage_sanctum import SageSanctumAgent, AgentResult
-from sage_sanctum.io.inputs import AgentInput, RepositoryInput
+from sage_sanctum.io.inputs import RepositoryInput
 from sage_sanctum.errors import InputValidationError
 
 
-class StrictAgent(SageSanctumAgent):
+class StrictAgent(SageSanctumAgent[RepositoryInput]):
     @property
     def name(self) -> str:
         return "strict-agent"
@@ -169,9 +168,8 @@ class StrictAgent(SageSanctumAgent):
     def version(self) -> str:
         return "1.0.0"
 
-    async def run(self, agent_input: AgentInput) -> AgentResult:
+    async def run(self, agent_input: RepositoryInput) -> AgentResult:
         repo = agent_input
-        assert isinstance(repo, RepositoryInput)
 
         py_files = repo.list_files(extensions={".py"})
         if not py_files:

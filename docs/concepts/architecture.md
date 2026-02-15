@@ -86,7 +86,7 @@ sequenceDiagram
     SDK-->>Agent: ChatResult
 ```
 
-## Two Modes of Operation
+## Three Modes of Operation
 
 ### Gateway Mode (Production)
 
@@ -98,3 +98,18 @@ For local development, set `SAGE_SANCTUM_ALLOW_DIRECT=1` to bypass the gateway a
 
 !!! warning
     Direct mode disables all gateway security checks. Never use it in production.
+
+### External LLM Mode
+
+For agents that wrap external tools (like Claude Code) which manage their own LLM communication. The SDK handles only I/O and lifecycle; the external tool talks to the gateway independently (e.g., via a socat TCP-to-UDS bridge).
+
+```
+Agent Pod
+├── Python Agent (SageSanctumAgent, requires_gateway=False)
+│   └── External tool (e.g., claude CLI via Agent SDK)
+│       └── ANTHROPIC_BASE_URL=http://127.0.0.1:8082
+├── socat bridge (TCP:8082 → UDS:/run/gateway.sock)
+└── LLM Gateway sidecar (credential injection, routing)
+```
+
+See the [Claude Code Integration](../guides/claude-code.md) guide for a full walkthrough.
